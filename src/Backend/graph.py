@@ -853,6 +853,23 @@ class KnowledgeGraph:
 		self._spectral_cache[cache_key] = depth
 		return depth
 
+	def spectral_graph_positions(self) -> dict[int, tuple[float, float]]:
+		"""
+		Compute 2D layout using spectral embedding (Fiedler + second eigenvector).
+		
+		Returns dict mapping topic_id → (x, y) in normalized space [-1, 1].
+		Perfect for topological graph visualization in the frontend.
+		"""
+		emb = self.spectral_embedding(k=2)
+		if emb.shape[0] == 0:
+			return {}
+		positions = {}
+		for tid in self.topics.keys():
+			x, y = emb[tid, 0], emb[tid, 1]
+			# Normalize to [-1, 1]
+			positions[tid] = (float(x), float(y))
+		return positions
+
 	def to_pyg_data(self) -> Data:
 		ei = self.build_edge_index()
 		x = self.build_feature_matrix()

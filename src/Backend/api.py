@@ -802,195 +802,90 @@ def get_progress(skill: str):
     })
 
 
-@app.route("/api/unmaster", methods=["POST"])
-def unmaster_topic():
+@app.route("/api/spectral-positions/<skill>", methods=["GET"])
+def get_spectral_positions(skill: str):
     """
-    Un-master a topic (toggle back to incomplete).
-
-    Request JSON:  { "skill": "Machine Learning", "topicId": "3" }
-    Response JSON: { "success": true, "mastered": [...], ... }
-    """
-    body = request.get_json(silent=True) or {}
-    skill = (body.get("skill") or "").strip().lower()
-    topic_id_str = body.get("topicId", "")
-
-    if not skill or topic_id_str == "":
-        return jsonify({"error": "missing 'skill' and/or 'topicId'"}), 400
-
-    entry = _get_graph(skill)
-    if not entry:
-        return jsonify({"error": f"no graph stored for '{skill}' — generate first"}), 404
-
-    kg, _ = entry
-    try:
-        tid = int(topic_id_str)
-    except (ValueError, TypeError):
-        return jsonify({"error": f"invalid topicId: {topic_id_str}"}), 400
-
-    if tid not in kg.topics:
-        return jsonify({"error": f"topic {tid} not found in graph"}), 404
-
-    # Un-master this topic and cascade: any dependent that required this
-    # should also be un-mastered to maintain prerequisite invariant.
-    def _cascade_unmaster(t_id: int) -> None:
-        kg.topics[t_id].mastered = False
-        for uid in kg.topics[t_id].unlocks:
-            if kg.topics[uid].mastered:
-                _cascade_unmaster(uid)
-
-    _cascade_unmaster(tid)
-
-    return jsonify({
-        "success":   True,
-        "mastered":  [{"id": str(t.topic_id), "name": t.name} for t in kg.get_mastered()],
-        "available": [{"id": str(t.topic_id), "name": t.name} for t in kg.get_available()],
-        "locked":    [{"id": str(t.topic_id), "name": t.name} for t in kg.get_locked()],
-        "progress":  round(kg.mastery_progress(), 4),
-    })
-
-
-@app.route("/api/flashcards/<skill>", methods=["GET"])
-def export_flashcards(skill: str):
-    """
-    Export the knowledge graph as Anki-compatible flashcards.
-
-    Each topic becomes a flashcard with:
-      - Front: topic name + level
-      - Back: description + prerequisites + what it unlocks
-    Returns JSON array that can be pasted into Anki or downloaded as TSV.
+    Return 2D spectral embedding positions for all topics.
+    
+    Uses topological spectral graph theory (Fiedler vector) for layout.
+    Frontend can use these for force-directed or spectral rendering.
+    
+    Response JSON: { "positions": {topicId: [x, y], ...}, "metadata": {...} }
     """
     entry = _get_graph(skill.lower())
     if not entry:
         return jsonify({"error": f"no graph stored for '{skill}'"}), 404
-
-    kg, spec = entry
-    resource_map: dict[str, list[dict]] = {}
-    if spec:
-        for s in spec:
-            key = s.get("name", "").lower()
-            resource_map[key] = s.get("resources", [])
-
-    cards: list[dict[str, str]] = []
-    for t in kg.learning_order():
-        prereq_names = sorted(kg.topics[p].name for p in t.prerequisites)
-        unlock_names = sorted(kg.topics[u].name for u in t.unlocks)
-        level_str = t.level.name.lower() if hasattr(t.level, "name") else str(t.level)
-        resources = resource_map.get(t.name.lower(), [])
-
-        front = f"{t.name} [{level_str}]"
-        back_parts = []
-        if t.description:
-            back_parts.append(t.description)
-        if prereq_names:
-            back_parts.append(f"Prerequisites: {', '.join(prereq_names)}")
-        if unlock_names:
-            back_parts.append(f"Unlocks: {', '.join(unlock_names)}")
-        if resources:
-            links = [f"• {r.get('title', '')} ({r.get('source', '')})" for r in resources[:3]]
-            back_parts.append("Resources:\n" + "\n".join(links))
-
-        cards.append({
-            "front": front,
-            "back":  "\n".join(back_parts) if back_parts else "No description available.",
-            "tags":  f"neuralearn {skill} {level_str}",
-        })
-
-    # Also build TSV for direct Anki import
-    tsv_lines = [f"{c['front']}\t{c['back']}\t{c['tags']}" for c in cards]
-
-    return jsonify({
-        "cards": cards,
-        "tsv":   "\n".join(tsv_lines),
-        "count": len(cards),
-    })
-
-
-@app.route("/api/study-stats/<skill>", methods=["GET"])
-def study_stats(skill: str):
-    """
-    Return study time estimation and difficulty breakdown for a skill.
-    """
-    entry = _get_graph(skill.lower())
-    if not entry:
-        return jsonify({"error": f"no graph stored for '{skill}'"}), 404
-
+    
     kg, _ = entry
-    topo = kg.learning_order()
-
-    total_minutes = 0
-    by_level: dict[str, int] = {}
-    for t in topo:
-        level_str = t.level.name.lower() if hasattr(t.level, "name") else str(t.level)
-        mins = _STUDY_TIME_MINUTES.get(level_str, 90)
-        total_minutes += mins
-        by_level[level_str] = by_level.get(level_str, 0) + 1
-
-    mastered_minutes = 0
-    for t in kg.get_mastered():
-        level_str = t.level.name.lower() if hasattr(t.level, "name") else str(t.level)
-        mastered_minutes += _STUDY_TIME_MINUTES.get(level_str, 90)
-
+    positions = kg.spectral_graph_positions()
+    
+    # Normalize to viewport coords if needed
+    positions_normalized = {}
+    for tid, (x, y) in positions.items():
+        positions_normalized[str(tid)] = [round(float(x), 4), round(float(y), 4)]
+    
     return jsonify({
-        "totalMinutes":     total_minutes,
-        "masteredMinutes":  mastered_minutes,
-        "remainingMinutes": total_minutes - mastered_minutes,
-        "totalHours":       round(total_minutes / 60, 1),
-        "remainingHours":   round((total_minutes - mastered_minutes) / 60, 1),
-        "byLevel":          by_level,
-        "topicCount":       kg.num_topics,
-        "masteredCount":    len(kg.get_mastered()),
+        "positions": positions_normalized,
+        "metadata": {
+            "method": "spectral_laplacian",
+            "eigenvalues": [round(float(v), 4) for v in kg.spectral_eigenvalues(k=3)],
+            "algebraicConnectivity": round(kg.algebraic_connectivity(), 4),
+        }
     })
 
 
 @app.route("/api/difficulty/<skill>", methods=["GET"])
-def difficulty_analysis(skill: str):
+def get_difficulty(skill: str):
     """
-    GAT-based difficulty prediction for every topic in a stored graph.
+    Predict per-topic difficulty using the GAT model.
+    
+    Response JSON: { "difficulties": {topicId: score, ...}, "recommendations": [...] }
+    """
+    _ensure_difficulty_gnn()
+    entry = _get_graph(skill.lower())
+    if not entry:
+        return jsonify({"error": f"no graph stored for '{skill}'"}), 404
+    
+    kg, _ = entry
+    mastered_ids = {t.topic_id for t in kg.get_mastered()}
+    
+    try:
+        scores = _predict_difficulty(kg, mastered_ids, skill_key=skill.lower())
+        recommendations = _get_smart_recommendation(kg, mastered_ids, skill_key=skill.lower(), precomputed_scores=scores)
+        
+        diffs = {str(tid): round(score, 4) for tid, score in scores.items()}
+        recs = [
+            {
+                "id": str(r["topicId"]),
+                "name": r["name"],
+                "difficulty": round(r.get("difficulty", 0.5), 4),
+                "reason": r.get("reason", ""),
+            }
+            for r in recommendations[:10]
+        ]
+        
+        return jsonify({"difficulties": diffs, "recommendations": recs})
+    except Exception as exc:
+        log.error("difficulty endpoint failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
-    Query params:
-      ?mastered=0,1,3  — comma-separated topic IDs already mastered (temporal context)
 
-    Response JSON: {
-      "scores":        { "0": 0.23, "1": 0.67, ... },
-      "explanations":  { "0": "...", "1": "...", ... },
-      "recommendation": [ { topicId, name, difficulty, reason }, ... ]
-    }
+@app.route("/api/learning-paths/<skill>", methods=["GET"])
+def get_learning_paths(skill: str):
+    """
+    Return all learning paths (Full, Optimal, Quick Start) with detailed steps.
+    
+    Response JSON: { "paths": [{id, name, steps, ...}, ...] }
     """
     entry = _get_graph(skill.lower())
     if not entry:
         return jsonify({"error": f"no graph stored for '{skill}'"}), 404
+    
+    kg, spec = entry
+    paths = _build_learning_paths(kg)
+    
+    return jsonify({"paths": paths, "totalTopics": kg.num_topics})
 
-    kg, _ = entry
-
-    # Parse mastered IDs from query string
-    mastered_str = request.args.get("mastered", "")
-    mastered_ids: set[int] = set()
-    if mastered_str:
-        for part in mastered_str.split(","):
-            part = part.strip()
-            if part.isdigit():
-                mastered_ids.add(int(part))
-
-    try:
-        _ensure_difficulty_gnn()
-        scores = _predict_difficulty(kg, mastered_ids, skill_key=skill.lower())
-        explanations = {
-            str(tid): _get_difficulty_explanation(kg, tid, score)
-            for tid, score in scores.items()
-        }
-        recommendation = _get_smart_recommendation(
-            kg, mastered_ids, skill_key=skill.lower(),
-            precomputed_scores=scores,
-        )
-
-        return jsonify({
-            "scores": {str(k): v for k, v in scores.items()},
-            "explanations": explanations,
-            "recommendation": recommendation,
-        })
-    except Exception as exc:
-        log.error("difficulty analysis failed: %s\n%s", exc, traceback.format_exc())
-        return jsonify({"error": str(exc)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════
