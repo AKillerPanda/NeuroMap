@@ -1,0 +1,15 @@
+export const categories = [
+  "Mathematics",
+  "Computer Science",
+  "Physics",
+  "Chemistry",
+  "Biology",
+  "Engineering",
+  "Business",
+  "Language",
+  "History",
+  "Philosophy",
+  "Art",
+  "Music",
+  "Other",
+];

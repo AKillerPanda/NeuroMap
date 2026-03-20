@@ -1,0 +1,20 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* ReactFlow custom styles */
+.react-flow__node {
+  cursor: grab;
+}
+
+.react-flow__node:active {
+  cursor: grabbing;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+
+.react-flow__controls {
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+}
