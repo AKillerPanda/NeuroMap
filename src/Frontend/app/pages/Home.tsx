@@ -1,6 +1,7 @@
 import { Link } from "react-router";
-import { Brain, Network, Route, Sparkles } from "lucide-react";
+import { Network, Route, Sparkles } from "lucide-react";
 import { Button } from "../components/ui/button";
+import { NeuroMapLogo } from "../components/NeuroMapLogo";
 
 export function Home() {
   return (
@@ -9,7 +10,7 @@ export function Home() {
         {/* Header */}
         <div className="text-center mb-16">
           <div className="flex items-center justify-center gap-3 mb-6">
-            <Brain className="size-12 text-violet-600" />
+            <NeuroMapLogo className="size-12" />
             <h1 className="text-5xl font-bold bg-gradient-to-r from-violet-600 to-blue-600 bg-clip-text text-transparent">
               NeuroMap
             </h1>

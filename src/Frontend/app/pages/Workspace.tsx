@@ -1,9 +1,10 @@
-import { Brain, Plus, Trash2, Network, Route, RotateCcw, Sparkles } from "lucide-react";
+import { Plus, Trash2, Network, Route, RotateCcw, Sparkles, Zap, Brain } from "lucide-react";
 import { Badge } from "../components/ui/badge";
+import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { toast } from "sonner";
 import { useRef } from "react";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { useTopics } from "../context/TopicsContext";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -20,6 +21,8 @@ export function Workspace() {
   const [category, setCategory] = useState("Computer Science");
   const [difficulty, setDifficulty] = useState<"beginner" | "intermediate" | "advanced">("beginner");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [aiSkill, setAiSkill] = useState("");
+  const navigate = useNavigate();
 
   const handleAddTopic = () => {
     if (!name.trim()) {
@@ -87,6 +90,15 @@ export function Workspace() {
     fileInputRef.current?.click();
   };
 
+  const handleGenerateAiGraph = () => {
+    const skill = aiSkill.trim();
+    if (!skill) {
+      toast.error("Enter a skill or subject to generate a graph");
+      return;
+    }
+    navigate(`/graph/${encodeURIComponent(skill)}`);
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -129,7 +141,7 @@ export function Workspace() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <Link to="/" className="flex items-center gap-2">
-              <Brain className="size-8 text-violet-600" />
+              <NeuroMapLogo className="size-8" />
               <span className="font-bold">NeuroMap</span>
             </Link>
             <div className="flex items-center gap-2">
@@ -174,6 +186,33 @@ export function Workspace() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
+        {/* AI-Powered Graph Generator */}
+        <div className="bg-gradient-to-r from-violet-600 to-blue-600 rounded-2xl p-6 shadow-lg mb-8 text-white">
+          <div className="flex items-center gap-2 mb-2">
+            <Zap className="size-5" />
+            <h2 className="font-bold text-lg">AI-Powered Knowledge Graph</h2>
+          </div>
+          <p className="text-violet-100 text-sm mb-4">
+            Enter any skill or subject and instantly generate a spectral knowledge graph with AI-predicted difficulty, personalized learning paths, and per-topic explanations.
+          </p>
+          <div className="flex gap-3">
+            <Input
+              className="bg-white/10 border-white/30 placeholder:text-violet-200 text-white flex-1"
+              placeholder="e.g. Machine Learning, Calculus, React..."
+              value={aiSkill}
+              onChange={(e) => setAiSkill(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleGenerateAiGraph()}
+            />
+            <Button
+              onClick={handleGenerateAiGraph}
+              className="bg-white text-violet-700 hover:bg-violet-50 font-semibold px-5"
+            >
+              <Sparkles className="size-4 mr-2" />
+              Generate Graph
+            </Button>
+          </div>
+        </div>
+
         <div className="grid lg:grid-cols-2 gap-8">
           {/* Input Section */}
           <div>

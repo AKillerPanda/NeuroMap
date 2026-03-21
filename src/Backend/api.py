@@ -27,6 +27,7 @@ import re
 import time
 import traceback
 import threading
+import weakref
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -38,8 +39,8 @@ from flask_cors import CORS
 # ── Backend imports ─────────────────────────────────────────────────
 from Webscraping import get_learning_spec
 from graph import KnowledgeGraph, TopicLevel
-from ACO import LearningPathACO, ParallelLearningACO
 from SDS import spell_correct, correct_phrase, load_dictionary
+from ACO import LearningPathACO, ParallelLearningACO
 # difficulty_gnn imports torch eagerly — defer to first use
 _predict_difficulty = None
 _get_difficulty_explanation = None
@@ -70,6 +71,16 @@ log.info("Dictionary loaded: %d words", len(_dict))
 _GRAPH_STORE_MAX = 50
 _graph_store: OrderedDict[str, tuple[KnowledgeGraph, list[dict]]] = OrderedDict()
 _graph_lock = threading.Lock()
+# Per-skill mutation locks: prevent concurrent master_topic() calls corrupting one KG
+_kg_locks: dict[str, threading.Lock] = {}
+_kg_locks_lock = threading.Lock()
+
+def _get_kg_lock(key: str) -> threading.Lock:
+    """Return (creating if necessary) the per-graph mutation lock for `key`."""
+    with _kg_locks_lock:
+        if key not in _kg_locks:
+            _kg_locks[key] = threading.Lock()
+        return _kg_locks[key]
 
 def _store_graph(key: str, value: tuple[KnowledgeGraph, list[dict]]) -> None:
     """Thread-safe LRU insert into the graph store."""
@@ -78,7 +89,10 @@ def _store_graph(key: str, value: tuple[KnowledgeGraph, list[dict]]) -> None:
             _graph_store.move_to_end(key)
         _graph_store[key] = value
         while len(_graph_store) > _GRAPH_STORE_MAX:
-            _graph_store.popitem(last=False)
+            evicted_key, _ = _graph_store.popitem(last=False)
+            # Clean up the associated lock to prevent unbounded growth
+            with _kg_locks_lock:
+                _kg_locks.pop(evicted_key, None)
 
 def _get_graph(key: str) -> tuple[KnowledgeGraph, list[dict]] | None:
     """Thread-safe LRU lookup."""
@@ -348,6 +362,8 @@ def _build_learning_paths(
             kw.update(aco_kwargs)
         aco = LearningPathACO(kg, **kw)
         aco_path, aco_cost = aco.optimise()
+        if not aco_path:
+            raise ValueError("ACO returned empty path — graph may be disconnected")
         aco_ids = [str(tid) for tid in aco_path]
         paths.append({
             "id":          "path-aco",
@@ -482,7 +498,6 @@ def _graph_stats(kg: KnowledgeGraph) -> dict[str, Any]:
     # Breadth vs Depth
     components = stats.get("connectedComponents", 1)
     n_topics = stats.get("numTopics", 0)
-    n_edges = stats.get("numEdges", 0)
     if n_topics > 0:
         depth_vec = kg.topological_depth_vector()
         max_depth = int(depth_vec[list(kg.topics.keys())].max()) if kg.topics else 0
@@ -989,29 +1004,36 @@ def master_topic():
     if tid not in kg.topics:
         return jsonify({"error": f"topic {tid} not found in graph"}), 404
 
-    success = kg.master_topic(tid)
-    if not success:
-        missing = [
-            kg.topics[p].name for p in kg.topics[tid].prerequisites
-            if not kg.topics[p].mastered
-        ]
-        # Return 200 with success=false so the frontend can read the body
-        return jsonify({
-            "success": False,
-            "reason": f"prerequisites not met: {', '.join(missing)}",
-            "mastered":  [{"id": str(t.topic_id), "name": t.name} for t in kg.get_mastered()],
-            "available": [{"id": str(t.topic_id), "name": t.name} for t in kg.get_available()],
-            "locked":    [{"id": str(t.topic_id), "name": t.name} for t in kg.get_locked()],
-            "progress":  round(kg.mastery_progress(), 4),
-        })
+    with _get_kg_lock(skill):
+        success = kg.master_topic(tid)
+        # Capture all KG state while still under the lock to prevent race conditions
+        mastered_list = [{"id": str(t.topic_id), "name": t.name} for t in kg.get_mastered()]
+        available_list = [{"id": str(t.topic_id), "name": t.name} for t in kg.get_available()]
+        locked_list = [{"id": str(t.topic_id), "name": t.name} for t in kg.get_locked()]
+        progress_val = round(kg.mastery_progress(), 4)
+        
+        if not success:
+            missing = [
+                kg.topics[p].name for p in kg.topics[tid].prerequisites
+                if not kg.topics[p].mastered
+            ]
+            # Return 200 with success=false so the frontend can read the body
+            return jsonify({
+                "success": False,
+                "reason": f"prerequisites not met: {', '.join(missing)}",
+                "mastered":  mastered_list,
+                "available": available_list,
+                "locked":    locked_list,
+                "progress":  progress_val,
+            })
 
-    return jsonify({
-        "success":   True,
-        "mastered":  [{"id": str(t.topic_id), "name": t.name} for t in kg.get_mastered()],
-        "available": [{"id": str(t.topic_id), "name": t.name} for t in kg.get_available()],
-        "locked":    [{"id": str(t.topic_id), "name": t.name} for t in kg.get_locked()],
-        "progress":  round(kg.mastery_progress(), 4),
-    })
+        return jsonify({
+            "success":   True,
+            "mastered":  mastered_list,
+            "available": available_list,
+            "locked":    locked_list,
+            "progress":  progress_val,
+        })
 
 
 @app.route("/api/shortest-path", methods=["POST"])
@@ -1092,21 +1114,32 @@ def get_spectral_positions(skill: str):
         return jsonify({"error": f"no graph stored for '{skill}'"}), 404
     
     kg, _ = entry
-    positions = kg.spectral_graph_positions()
-    
-    # Normalize to viewport coords if needed
-    positions_normalized = {}
-    for tid, (x, y) in positions.items():
-        positions_normalized[str(tid)] = [round(float(x), 4), round(float(y), 4)]
-    
-    return jsonify({
-        "positions": positions_normalized,
-        "metadata": {
-            "method": "spectral_laplacian",
-            "eigenvalues": [round(float(v), 4) for v in kg.spectral_eigenvalues(k=3)],
-            "algebraicConnectivity": round(kg.algebraic_connectivity(), 4),
-        }
-    })
+    try:
+        positions = kg.spectral_graph_positions()
+        positions_normalized = {}
+        for tid, (x, y) in positions.items():
+            positions_normalized[str(tid)] = [round(float(x), 4), round(float(y), 4)]
+
+        try:
+            eigenvalues = [round(float(v), 4) for v in kg.spectral_eigenvalues(k=3)]
+        except Exception:
+            eigenvalues = []
+        try:
+            alg_conn = round(kg.algebraic_connectivity(), 4)
+        except Exception:
+            alg_conn = None
+
+        return jsonify({
+            "positions": positions_normalized,
+            "metadata": {
+                "method": "spectral_laplacian",
+                "eigenvalues": eigenvalues,
+                "algebraicConnectivity": alg_conn,
+            }
+        })
+    except Exception as exc:
+        log.error("spectral-positions failed: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/api/difficulty/<skill>", methods=["GET"])
@@ -1161,6 +1194,123 @@ def get_learning_paths(skill: str):
     
     return jsonify({"paths": paths, "totalTopics": kg.num_topics})
 
+
+
+@app.route("/api/summary/<skill>/<topic_id>", methods=["GET"])
+def get_topic_summary(skill: str, topic_id: str):
+    """
+    Return an AI-style summary for a single topic node.
+
+    Combines the scraped description, GNN difficulty analysis, and graph
+    structure into a structured, human-readable summary.
+
+    Response JSON: {
+        topicId, name, level, difficultyScore, difficultyExplanation,
+        description, keyPoints, studyTip, resources, depth,
+        prerequisiteCount, unlocksCount, estimatedMinutes
+    }
+    """
+    entry = _get_graph(skill.lower())
+    if not entry:
+        return jsonify({"error": f"no graph stored for '{skill}' — generate first"}), 404
+
+    kg, spec = entry
+    try:
+        tid = int(topic_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": f"invalid topicId: {topic_id}"}), 400
+
+    if tid not in kg.topics:
+        return jsonify({"error": f"topic {tid} not found in graph"}), 404
+
+    t = kg.topics[tid]
+    level_str = t.level.name.lower() if hasattr(t.level, "name") else str(t.level)
+
+    # Topological depth
+    try:
+        depth_vec = kg.topological_depth_vector()
+        depth = int(depth_vec[tid])
+    except (IndexError, KeyError, TypeError):
+        depth = 0
+
+    # GAT difficulty score + explanation
+    _ensure_difficulty_gnn()
+    mastered_ids = {t2.topic_id for t2 in kg.get_mastered()}
+    try:
+        scores = _predict_difficulty(kg, mastered_ids, skill_key=skill.lower())
+        score = scores.get(tid, 0.5)
+        explanation = _get_difficulty_explanation(kg, tid, score)
+    except Exception:
+        score = 0.5
+        explanation = "Difficulty analysis unavailable."
+
+    # Description + resources from spec
+    spec_entry = next(
+        (s for s in spec if s.get("name", "").lower() == t.name.lower()), {}
+    )
+    description = spec_entry.get("description", "") or t.description or ""
+    resources = spec_entry.get("resources", [])[:5]
+
+    # Key points from graph structure
+    prereq_names = [kg.topics[p].name for p in t.prerequisites if p in kg.topics]
+    unlock_names = [kg.topics[u].name for u in t.unlocks if u in kg.topics]
+
+    key_points: list[str] = []
+    if prereq_names:
+        shown = prereq_names[:3]
+        key_points.append(
+            f"Requires: {', '.join(shown)}"
+            + (" …" if len(prereq_names) > 3 else "")
+        )
+    else:
+        key_points.append("No prerequisites — you can start this immediately.")
+    if unlock_names:
+        shown_u = unlock_names[:3]
+        key_points.append(
+            f"Unlocks: {', '.join(shown_u)}"
+            + (" …" if len(unlock_names) > 3 else "")
+        )
+    if depth == 0:
+        key_points.append("Root concept — a natural starting point in the curriculum.")
+    elif depth >= 3:
+        key_points.append(
+            f"Depth {depth} in the graph — builds on substantial prior knowledge."
+        )
+
+    study_tips = {
+        "foundational": (
+            "Review basic definitions first, then work through simple examples "
+            "before moving on to harder material."
+        ),
+        "intermediate": (
+            "Actively connect this topic to things you already know. "
+            "Practice exercises are more effective than re-reading."
+        ),
+        "advanced": (
+            "Work through worked examples methodically and cross-reference "
+            "with your prerequisites frequently."
+        ),
+        "expert": (
+            "Engage with primary sources and papers. Apply knowledge to "
+            "real problems — teaching others also deepens understanding."
+        ),
+    }
+
+    return jsonify({
+        "topicId":               topic_id,
+        "name":                  t.name,
+        "level":                 level_str,
+        "difficultyScore":       round(score, 3),
+        "difficultyExplanation": explanation,
+        "description":           description,
+        "keyPoints":             key_points,
+        "studyTip":              study_tips.get(level_str, study_tips["intermediate"]),
+        "resources":             resources,
+        "depth":                 depth,
+        "prerequisiteCount":     len(t.prerequisites),
+        "unlocksCount":          len(t.unlocks),
+        "estimatedMinutes":      _STUDY_TIME_MINUTES.get(level_str, 90),
+    })
 
 
 @app.route("/api/generate-parallel", methods=["POST"])

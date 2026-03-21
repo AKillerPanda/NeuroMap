@@ -16,6 +16,7 @@ import "@xyflow/react/dist/style.css";
 import { useTopics } from "../context/TopicsContext";
 import { Button } from "../components/ui/button";
 import { Brain, Home, Route as RouteIcon, ZoomIn, ZoomOut } from "lucide-react";
+import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { Badge } from "../components/ui/badge";
 
 const nodeWidth = 200;
@@ -141,7 +142,7 @@ export function Graph() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <Link to="/" className="flex items-center gap-2">
-              <Brain className="size-8 text-violet-600" />
+              <NeuroMapLogo className="size-8" />
               <span className="font-bold">NeuroMap</span>
             </Link>
             <div className="flex items-center gap-2">

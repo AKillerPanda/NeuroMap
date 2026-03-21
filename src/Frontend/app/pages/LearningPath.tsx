@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { useTopics, Topic } from "../context/TopicsContext";
 import { Button } from "../components/ui/button";
 import { Brain, Home, Network, CheckCircle2, Circle, PlayCircle, ArrowRight } from "lucide-react";
+import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { Badge } from "../components/ui/badge";
 import { Progress } from "../components/ui/progress";
 
@@ -137,7 +138,7 @@ export function LearningPath() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <Link to="/" className="flex items-center gap-2">
-              <Brain className="size-8 text-violet-600" />
+              <NeuroMapLogo className="size-8" />
               <span className="font-bold">NeuroMap</span>
             </Link>
             <div className="flex items-center gap-2">
