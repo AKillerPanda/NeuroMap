@@ -212,89 +212,83 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
     };
 
     const incomingIdToTopicId = new Map<string, string>();
-    let addedTopics = 0;
-    let addedRelations = 0;
+    const topicsToAdd: Topic[] = [];
+    const newRelations: TopicRelation[] = [];
 
-    setTopics((prev) => {
-      const existingByName = new Map(
-        prev.map((t) => [t.name.trim().toLowerCase(), t.id] as const)
-      );
-      const topicsToAdd: Topic[] = [];
+    // Process nodes first to build the mapping and collect topics to add
+    const existingByName = new Map(
+      topics.map((t) => [t.name.trim().toLowerCase(), t.id] as const)
+    );
 
-      for (const n of graph.nodes) {
-        const raw = (n.data ?? {}) as Record<string, unknown>;
-        const label = String(raw.originalName ?? raw.label ?? "").trim();
-        if (!label) continue;
+    for (const n of graph.nodes) {
+      const raw = (n.data ?? {}) as Record<string, unknown>;
+      const label = String(raw.originalName ?? raw.label ?? "").trim();
+      if (!label) continue;
 
-        const key = label.toLowerCase();
-        const existingId = existingByName.get(key);
-        if (existingId) {
-          incomingIdToTopicId.set(n.id, existingId);
-          continue;
-        }
-
-        const newId = `topic-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        incomingIdToTopicId.set(n.id, newId);
-        existingByName.set(key, newId);
-
-        const sourceSkill = String(raw.sourceSkill ?? "AI Graph").trim();
-        const resourcesRaw = Array.isArray(raw.resources) ? raw.resources : [];
-        const resources = resourcesRaw
-          .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
-          .map((r) => ({
-            title: String(r.title ?? "Learning resource"),
-            url: String(r.url ?? "").trim(),
-            source: String(r.source ?? ""),
-            type: String(r.type ?? "link"),
-          }))
-          .filter((r) => r.url.length > 0);
-
-        topicsToAdd.push({
-          id: newId,
-          name: label,
-          description: String(raw.description ?? "").trim(),
-          category: sourceSkill || "AI Graph",
-          difficulty: levelToDifficulty(String(raw.level ?? "")),
-          difficultyScore: (typeof raw.difficultyScore === "number" && Number.isFinite(raw.difficultyScore))
-            ? raw.difficultyScore
-            : undefined,
-          status: "not-started",
-          resources,
-          importedFromAi: true,
-        });
+      const key = label.toLowerCase();
+      const existingId = existingByName.get(key);
+      if (existingId) {
+        incomingIdToTopicId.set(n.id, existingId);
+        continue;
       }
 
-      addedTopics = topicsToAdd.length;
-      return topicsToAdd.length > 0 ? [...prev, ...topicsToAdd] : prev;
-    });
+      const newId = `topic-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      incomingIdToTopicId.set(n.id, newId);
+      existingByName.set(key, newId);
 
-    setRelations((prev) => {
-      const existingRelSet = new Set(
-        prev.map((r) => `${r.source}->${r.target}:${r.type}`)
-      );
-      const newRelations: TopicRelation[] = [];
+      const sourceSkill = String(raw.sourceSkill ?? "AI Graph").trim();
+      const resourcesRaw = Array.isArray(raw.resources) ? raw.resources : [];
+      const resources = resourcesRaw
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .map((r) => ({
+          title: String(r.title ?? "Learning resource"),
+          url: String(r.url ?? "").trim(),
+          source: String(r.source ?? ""),
+          type: String(r.type ?? "link"),
+        }))
+        .filter((r) => r.url.length > 0);
 
-      for (const e of graph.edges) {
-        const source = incomingIdToTopicId.get(e.source);
-        const target = incomingIdToTopicId.get(e.target);
-        if (!source || !target || source === target) continue;
-        const key = `${source}->${target}:prerequisite`;
-        if (existingRelSet.has(key)) continue;
-        existingRelSet.add(key);
-        newRelations.push({
-          id: `rel-${source}-${target}`,
-          source,
-          target,
-          type: "prerequisite",
-          strength: 0.8,
-        });
-      }
+      topicsToAdd.push({
+        id: newId,
+        name: label,
+        description: String(raw.description ?? "").trim(),
+        category: sourceSkill || "AI Graph",
+        difficulty: levelToDifficulty(String(raw.level ?? "")),
+        difficultyScore: (typeof raw.difficultyScore === "number" && Number.isFinite(raw.difficultyScore))
+          ? raw.difficultyScore
+          : undefined,
+        status: "not-started",
+        resources,
+        importedFromAi: true,
+      });
+    }
 
-      addedRelations = newRelations.length;
-      return newRelations.length > 0 ? [...prev, ...newRelations] : prev;
-    });
+    // Process edges to build relations
+    const existingRelSet = new Set(
+      relations.map((r) => `${r.source}->${r.target}:${r.type}`)
+    );
 
-    return { addedTopics, addedRelations };
+    for (const e of graph.edges) {
+      const source = incomingIdToTopicId.get(e.source);
+      const target = incomingIdToTopicId.get(e.target);
+      if (!source || !target || source === target) continue;
+      const key = `${source}->${target}:prerequisite`;
+      if (existingRelSet.has(key)) continue;
+      existingRelSet.add(key);
+      newRelations.push({
+        id: `rel-${source}-${target}`,
+        source,
+        target,
+        type: "prerequisite",
+        strength: 0.8,
+      });
+    }
+
+    // Now update state and return correct counts
+    setTopics((prev) => (topicsToAdd.length > 0 ? [...prev, ...topicsToAdd] : prev));
+    setRelations((prev) => (newRelations.length > 0 ? [...prev, ...newRelations] : prev));
+
+    return { addedTopics: topicsToAdd.length, addedRelations: newRelations.length };
   };
 
   return (

@@ -16,16 +16,16 @@
     <meta property="og:type" content="website" />
     <meta property="og:title" content="NeuroMap — Interactive Knowledge Graph Learning Platform" />
     <meta property="og:description" content="Transform complex knowledge into interactive visual graphs. Explore topics, discover connections, and master skills through adaptive learning paths." />
-    <meta property="og:url" content="https://neuromap.example.com" />
+    <meta property="og:url" content="https://your-production-domain.com" />
     
     <!-- Accessibility -->
     <meta name="color-scheme" content="light dark" />
     <meta name="supported-color-schemes" content="light dark" />
     
     <!-- Performance Hints -->
-    <link rel="preconnect" href="http://localhost:5000" crossorigin />
-    <link rel="dns-prefetch" href="http://localhost:5000" />
-    <link rel="preload" href="/fonts/system-ui" as="font" type="font/woff2" crossorigin />
+    <!-- Note: Backend API URL should be configured at deployment time -->
+    <link rel="dns-prefetch" href="https://cdn.example.com" />
+    <!-- Preload can be added for critical fonts if hosted locally; "system-ui" is a CSS keyword, not a font file -->
     
     <!-- Favicon -->
     <link rel="icon" href="/favicon.ico" type="image/x-icon" />
@@ -33,7 +33,9 @@
     
     <!-- Security -->
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://localhost:5000 https://; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;" />
+    <!-- Note: CSP should be set by server headers in production, not meta tags, for proper security -->
+    <!-- Development CSP allows localhost; production should inject stricter CSP via headers -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http: https:;" />
   </head>
   <body>
     <div id="root">

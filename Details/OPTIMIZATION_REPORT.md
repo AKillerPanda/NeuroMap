@@ -1,7 +1,7 @@
 # NeuroMap Performance Optimization Report
 
 **Generated:** March 2026  
-**Status:** Production-Ready Optimizations Implemented  
+**Status:** Optimizations Implemented - Testing Required  
 
 ---
 
@@ -28,7 +28,7 @@ NeuroMap has been optimized from development state to production-grade performan
 | Code Splitting | None | 5 chunks | ✅ Enabled |
 | Minification | Yes | Yes + terser | Enhanced |
 | CSS Splitting | No | Yes | ✅ Enabled |
-| Source Maps | Full | Hidden | 50% reduction |
+| Source Maps | Full | Hidden / Excluded from production (no bundle size impact) | Security ✅ |
 | Meta Tags | Minimal | Comprehensive | ✅ SEO-ready |
 | Accessibility | Basic | Enhanced | ✅ WCAG 2.1 AA |
 
@@ -108,11 +108,12 @@ NeuroMap has been optimized from development state to production-grade performan
    - Per-skill mutation locks
    - Thread-safe concurrent access
 
-4. **Lazy Module Loading (api.py)**
-   - PyTorch/CUDA deferred import
-   - Graceful fallback if unavailable
+4. **Lazy Module Loading (api.py) — Infrastructure Ready, Not Yet Deployed**
+   - Lazy-import infrastructure implemented for PyTorch/CUDA
+   - Graceful fallback to heuristic scoring when torch unavailable
    - Reduced startup time
    - Lower memory footprint
+   - **Note**: PyTorch/CUDA/GNN scoring not yet installed (See "Next Steps: Enable PyTorch/CUDA")
 
 5. **Thread Pool Execution**
    - Parallel graph generation
@@ -222,7 +223,7 @@ Graph store eviction: Active (prevents unbounded growth)
 
 ### Implementation Summary
 - ✅ HTTP Security Headers (all responses)
-- ✅ HTTPS/TLS enforcement (Nginx config ready)
+- 🟡 HTTPS/TLS acceleration (Nginx config provided, requires certificate provisioning and deployment)
 - ✅ CORS origin restriction (configurable)
 - ✅ XSS prevention (URL sanitization in frontend)
 - ✅ Input validation (existing in backend)
@@ -256,6 +257,13 @@ Graph store eviction: Active (prevents unbounded growth)
 - Dockerfile syntax: Valid multi-stage builds
 - Docker Compose: Syntax validation passed
 - Health checks: Configured for both services
+
+### ⚠️ Outstanding Validation Required
+- **Functional Testing**: End-to-end test in browser (spell-check, graph generation, learning path)
+- **Integration Testing**: Frontend + backend communication verified
+- **Load Testing**: Verify performance under 50+ concurrent users
+- **Security Testing**: Penetration testing and vulnerability scanning
+- **Performance Regression**: Benchmark against baseline to verify optimization gains
 
 ---
 

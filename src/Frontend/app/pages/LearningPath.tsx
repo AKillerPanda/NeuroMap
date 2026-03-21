@@ -94,9 +94,9 @@ export function LearningPath() {
         const path: PathStep[] = steps
           .map((s: any) => {
             const stepTopicId = s.topicId ?? s.id;
-            const topic = stepTopicId
-              ? topicMapById.get(String(stepTopicId))
-              : topicMapByName.get(String(s.name));
+            // Try ID lookup first; fall back to name lookup only if ID lookup fails and name is defined
+            const topic = (stepTopicId ? topicMapById.get(String(stepTopicId)) : undefined) ?? 
+                         (s.name ? topicMapByName.get(String(s.name)) : undefined);
             if (!topic) return null;
             const prereqNames = Array.isArray(s.requires) ? s.requires.map(String) : [];
             const prerequisites = prereqNames

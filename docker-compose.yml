@@ -11,7 +11,7 @@ services:
     environment:
       FLASK_ENV: production
       FLASK_DEBUG: '0'
-      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      SECRET_KEY: "${SECRET_KEY:?Error: SECRET_KEY not set. Please define it in .env file}"
       HOST: "0.0.0.0"
       PORT: "5000"
       ENABLE_COMPRESSION: "1"
@@ -22,7 +22,7 @@ services:
     command: gunicorn -w 4 -b 0.0.0.0:5000 api:app --timeout=60 --access-logfile -
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "python", "-c", "import requests; r = requests.get('http://localhost:5000/health'); r.raise_for_status()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -46,11 +46,10 @@ services:
         condition: service_healthy
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./src/Frontend/dist:/usr/share/nginx/html:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:80/"]
-      interval: 30s
+      interval: 30swget", "--quiet", "--tries=1", "--spider", "http://localhost
       timeout: 10s
       retries: 3
     networks:

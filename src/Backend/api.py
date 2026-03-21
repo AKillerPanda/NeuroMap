@@ -127,9 +127,16 @@ def add_security_headers(response):
     """Add security headers to all responses."""
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
+    # X-XSS-Protection is deprecated; modern browsers use CSP
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Cache-Control'] = 'public, max-age=3600'
+    
+    # Set Cache-Control based on request method
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+    else:
+        # POST, PUT, DELETE, PATCH should not be cached
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    
     return response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
