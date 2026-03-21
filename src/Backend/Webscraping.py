@@ -648,11 +648,24 @@ def get_learning_plan(topic: str) -> LearningPlan:
 		step = LearningStep(step_number=i + 1, subtopic=name, level=levels[i])
 		plan.steps.append(step)
 
-	# Distribute resources round-robin across steps
+	# Distribute resources to the most relevant step by word overlap with the
+	# step's subtopic name, falling back to round-robin for unmatched resources.
 	if all_resources:
-		for idx, res in enumerate(all_resources):
-			step_idx = idx % len(plan.steps)
-			plan.steps[step_idx].resources.append(res)
+		unmatched = []
+		for res in all_resources:
+			res_words = set(res.title.lower().split())
+			best_idx, best_score = 0, -1
+			for idx, step in enumerate(plan.steps):
+				step_words = set(step.subtopic.lower().split())
+				score = len(res_words & step_words)
+				if score > best_score:
+					best_score, best_idx = score, idx
+			if best_score > 0:
+				plan.steps[best_idx].resources.append(res)
+			else:
+				unmatched.append(res)
+		for idx, res in enumerate(unmatched):
+			plan.steps[idx % len(plan.steps)].resources.append(res)
 
 	# Ensure each step gets access to top playlist links for learning continuity
 	top_playlists = [

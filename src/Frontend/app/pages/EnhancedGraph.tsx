@@ -57,6 +57,7 @@ interface TopicNodeData extends Record<string, unknown> {
   isInPath: boolean;
   isBridge: boolean;
   estimatedMinutes?: number;
+  subSkillKey?: string;
 }
 
 interface TopicSummary {
@@ -235,7 +236,11 @@ function parseRequestedSkills(input: string): string[] {
 
 export function EnhancedGraph() {
   const { skill, skills } = useParams<{ skill?: string; skills?: string }>();
-  const decoded   = (skill || skills) ? decodeURIComponent(skill || skills || "") : "";
+  const decoded = (() => {
+    const raw = skill || skills || "";
+    if (!raw) return "";
+    try { return decodeURIComponent(raw); } catch { return raw; }
+  })();
   const isMultiRoute = Boolean(skills);
   const requestedSkills = useMemo(() => {
     if (!decoded) return [];
@@ -289,6 +294,7 @@ export function EnhancedGraph() {
           isInPath:        pathIds.has(n.id),
           isBridge:        n.data.isBridge ?? false,
           estimatedMinutes: n.data.estimatedMinutes,
+          subSkillKey:     n.data.subSkillKey as string | undefined,
           // kept for the detail panel
           _raw: n.data,
         } as TopicNodeData,
@@ -396,10 +402,11 @@ export function EnhancedGraph() {
   const onNodeClick = useCallback(async (_: ReactMouseEvent, node: Node) => {
     setSelectedId(node.id);
     setActiveTab("detail");
-    if (!summaryCache[node.id] && activeSkillKey) {
+    const skillForSummary = (node.data as TopicNodeData).subSkillKey ?? activeSkillKey;
+    if (!summaryCache[node.id] && skillForSummary) {
       setSummaryLoading(true);
       try {
-        const r = await fetch(`/api/summary/${encodeURIComponent(activeSkillKey)}/${node.id}`);
+        const r = await fetch(`/api/summary/${encodeURIComponent(skillForSummary)}/${node.id}`);
         if (r.ok) {
           const d: TopicSummary = await r.json();
           setSummaryCache(p => ({ ...p, [node.id]: d }));
@@ -412,16 +419,17 @@ export function EnhancedGraph() {
 
   // ── Master topic ────────────────────────────────────────────────────────────
 
-  const masterTopic = useCallback(async (topicId: string) => {
+  const masterTopic = useCallback(async (topicId: string, skillKeyOverride?: string) => {
     // Prevent concurrent submissions
     if (isMastering) return;
-    
+
+    const skillForMastery = skillKeyOverride ?? activeSkillKey;
     setIsMastering(true);
     try {
       const r = await fetch("/api/master", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ skill: activeSkillKey, topicId }),
+        body:    JSON.stringify({ skill: skillForMastery, topicId }),
       });
       if (!r.ok) { toast.error("Request failed"); return; }
       const d = await r.json();
@@ -464,10 +472,13 @@ export function EnhancedGraph() {
       const d = await r.json();
 
       // Offset new nodes to the right of the existing graph
-      const maxX  = rawNodes.reduce((m, n) => Math.max(m, n.position.x), 0);
+      const maxX  = rawNodes.reduce((m, n) => Math.max(m, n.position?.x ?? 0), 0);
       const shift = maxX + 450;
+      const subSkillKey = newTopic.trim().toLowerCase();
       const newRaw: any[] = d.nodes.map((n: any) => ({
-        ...n, position: { x: n.position.x + shift, y: n.position.y },
+        ...n,
+        position: { x: (n.position?.x ?? 0) + shift, y: n.position?.y ?? 0 },
+        data: { ...n.data, subSkillKey },
       }));
 
       // Fetch difficulty scores for the newly added sub-graph
@@ -851,7 +862,7 @@ export function EnhancedGraph() {
                   {!mastered.has(selectedId) ? (
                     <Button
                       className="w-full bg-emerald-600 hover:bg-emerald-700"
-                      onClick={() => masterTopic(selectedId)}
+                      onClick={() => masterTopic(selectedId, (selectedRaw?.subSkillKey as string | undefined))}
                       disabled={isMastering}
                     >
                       {isMastering ? (

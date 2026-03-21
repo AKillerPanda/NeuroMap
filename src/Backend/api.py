@@ -1191,11 +1191,16 @@ def get_progress(skill: str):
         return jsonify({"error": f"no graph stored for '{skill}'"}), 404
 
     kg, _ = entry
+    with _get_kg_lock(skill.lower()):
+        mastered_list  = [{"id": str(t.topic_id), "name": t.name} for t in kg.get_mastered()]
+        available_list = [{"id": str(t.topic_id), "name": t.name} for t in kg.get_available()]
+        locked_list    = [{"id": str(t.topic_id), "name": t.name} for t in kg.get_locked()]
+        progress_val   = round(kg.mastery_progress(), 4)
     return jsonify({
-        "mastered":  [{"id": str(t.topic_id), "name": t.name} for t in kg.get_mastered()],
-        "available": [{"id": str(t.topic_id), "name": t.name} for t in kg.get_available()],
-        "locked":    [{"id": str(t.topic_id), "name": t.name} for t in kg.get_locked()],
-        "progress":  round(kg.mastery_progress(), 4),
+        "mastered":  mastered_list,
+        "available": available_list,
+        "locked":    locked_list,
+        "progress":  progress_val,
     })
 
 
@@ -1961,4 +1966,4 @@ def generate_parallel():
 # Entry point
 # ═══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")

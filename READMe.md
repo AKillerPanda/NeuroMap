@@ -73,6 +73,39 @@ NeuroMap/
 
 ## Architecture Overview
 
+### System Architecture Diagram
+
+```mermaid
+flowchart LR
+  U[User] --> W[Workspace UI]
+  U --> G[NeuroMap Graph UI]
+
+  W --> R{Route}
+  R -->|Single| E1[EnhancedGraph]
+  R -->|Merged| E2[EnhancedGraph]
+
+  E1 --> API[Flask API Layer]
+  E2 --> API
+  G --> API
+
+  API --> GEN[Generation Endpoints]
+  API --> PATH[Path & Progress Endpoints]
+  API --> DIFF[Difficulty & Summary Endpoints]
+
+  GEN --> KG[KnowledgeGraph + Spectral Ops]
+  PATH --> ACO[ACO Optimizer]
+  DIFF --> GNN[GNN/Heuristic Difficulty]
+  API --> SCR[Scraping Pipeline]
+
+  E1 --> CTX[TopicsContext]
+  E2 --> CTX
+  G --> CTX
+  CTX --> LS[(localStorage)]
+
+  NGINX[Nginx] -->|/api| API
+  NGINX -->|static app| FE[Frontend Build]
+```
+
 ### 1. AI Graph Generation Flow
 
 1. User enters skill(s) in Workspace.

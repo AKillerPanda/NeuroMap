@@ -297,7 +297,15 @@ def calibrate_model(
 # Module-level singleton (lightweight, no trained weights to persist)
 _model: DifficultyGAT | None = None
 _calibrated_for: str | None = None  # skill key last calibrated for
-_model_lock = threading.Lock()       # guards _model and _calibrated_for
+_model_lock = threading.Lock()       # guards inference (fast — ms range)
+_calibration_lock = threading.Lock() # guards calibration (slow — 30 epochs)
+
+# Small scores cache: avoids re-running inference for repeated calls with
+# the same mastery state (e.g. multiple /api/summary clicks on the same graph).
+# Key: (skill_key, frozenset[mastered_ids]) → scores dict
+# Capped at 20 entries to bound memory.
+_scores_cache: dict[tuple[str, frozenset[int]], dict[int, float]] = {}
+_SCORES_CACHE_MAX = 20
 
 
 def predict_difficulty(
@@ -311,27 +319,51 @@ def predict_difficulty(
     Returns {topic_id: difficulty_score} where score ∈ [0, 1].
     The model is lazily initialised and calibrated on first call
     per skill (recalibrated if the skill changes).
+
+    Calibration uses a separate lock so concurrent inference for an already-
+    calibrated skill is not blocked by a 30-epoch training run for a different
+    skill.
     """
     global _model, _calibrated_for
 
+    mastered_set = mastered_ids or set()
+    cache_key = (skill_key, frozenset(mastered_set))
+
+    # Return cached result if mastery state hasn't changed
+    if cache_key in _scores_cache:
+        return _scores_cache[cache_key]
+
+    # Ensure model exists (fast)
     with _model_lock:
         if _model is None:
             _model = DifficultyGAT()
 
-        # Recalibrate if this is a new skill graph
-        if _calibrated_for != skill_key or skill_key == "":
-            calibrate_model(_model, kg, epochs=30)
-            _calibrated_for = skill_key
+    # Calibrate under dedicated lock so inference is not starved
+    if _calibrated_for != skill_key or skill_key == "":
+        with _calibration_lock:
+            # Double-checked: another thread may have calibrated while we waited
+            if _calibrated_for != skill_key or skill_key == "":
+                calibrate_model(_model, kg, epochs=30)
+                _calibrated_for = skill_key
 
+    # Fast inference under model lock
+    with _model_lock:
         _model.eval()
         with torch.no_grad():
-            feats = build_difficulty_features(kg, mastered_ids or set())
+            feats = build_difficulty_features(kg, mastered_set)
             ei = _make_bidirectional(kg.build_edge_index())
             if feats.shape[0] == 0:
                 return {}
-            scores = _model(feats, ei)
+            raw_scores = _model(feats, ei)
 
-    return {tid: round(float(scores[tid]), 4) for tid in kg.topics}
+    result = {tid: round(float(raw_scores[tid]), 4) for tid in kg.topics}
+
+    # Store in cache; evict oldest entry if over cap
+    if len(_scores_cache) >= _SCORES_CACHE_MAX:
+        _scores_cache.pop(next(iter(_scores_cache)))
+    _scores_cache[cache_key] = result
+
+    return result
 
 
 def get_difficulty_explanation(

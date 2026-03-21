@@ -357,7 +357,20 @@ class KnowledgeGraph:
 					queue.append(uid)
 
 		if len(order) != len(self.topics):
-			raise ValueError("knowledge graph contains a cycle — no valid learning order")
+			# Graph contains a cycle (web-scraping can produce these).
+			# Break cycles by including unvisited nodes in an arbitrary but
+			# deterministic order so callers always get a complete list rather
+			# than a ValueError crash.
+			import logging as _log
+			_log.getLogger(__name__).warning(
+				"learning_order: cycle detected — %d nodes excluded from Kahn pass; "
+				"appending in topic_id order to recover",
+				len(self.topics) - len(order),
+			)
+			visited_ids = {t.topic_id for t in order}
+			for tid in sorted(self.topics):
+				if tid not in visited_ids:
+					order.append(self.topics[tid])
 
 		self._topo_cache = order
 		return order
