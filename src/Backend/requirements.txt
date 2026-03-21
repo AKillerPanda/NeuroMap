@@ -1,6 +1,7 @@
 Flask==2.3.3
 flask-cors==4.0.0
 Flask-Compress==1.14.0
+gunicorn==22.0.0
 python-dotenv==1.0.0
 torch==2.10.0
 torch-geometric==2.3.0

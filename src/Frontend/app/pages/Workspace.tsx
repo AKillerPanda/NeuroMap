@@ -1,4 +1,4 @@
-import { Plus, Trash2, Network, Route, RotateCcw, Sparkles, Zap, Brain } from "lucide-react";
+import { Plus, Trash2, Network, Route, RotateCcw, Sparkles, Zap, Brain, Loader2, Bookmark, Compass } from "lucide-react";
 import { Badge } from "../components/ui/badge";
 import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { toast } from "sonner";
@@ -12,11 +12,23 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Textarea } from "../components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { categories } from "../data/categories";
 import { Download, Upload } from "lucide-react";
 
 export function Workspace() {
-  const { topics, addTopic, removeTopic, generateRelations, clearAll, loadDemoData, exportData, importData } = useTopics();
+  const {
+    topics,
+    addTopic,
+    removeTopic,
+    generateRelations,
+    clearAll,
+    loadDemoData,
+    exportData,
+    importData,
+    savedGraphs,
+    removeSavedGraph,
+  } = useTopics();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("Computer Science");
@@ -27,7 +39,17 @@ export function Workspace() {
   const [isCheckingSpelling, setIsCheckingSpelling] = useState(false);
   const [topicSpellSuggestions, setTopicSpellSuggestions] = useState<string[]>([]);
   const [isCheckingTopicSpelling, setIsCheckingTopicSpelling] = useState(false);
+  
+  // Multi-skill merge state
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [multiSkillInput, setMultiSkillInput] = useState("");
+  const [isBuildingMulti, setIsBuildingMulti] = useState(false);
+  const [savedFilter, setSavedFilter] = useState<"all" | "single" | "merged">("all");
+  
   const navigate = useNavigate();
+  const filteredSavedGraphs = savedGraphs.filter((g) =>
+    savedFilter === "all" ? true : g.type === savedFilter
+  );
 
   const buildCorrectionOptions = (
     originalText: string,
@@ -215,6 +237,37 @@ export function Workspace() {
     navigate(`/graph/${encodeURIComponent(skill)}`);
   };
 
+  const handleAddMultiSkill = () => {
+    const skill = multiSkillInput.trim();
+    if (!skill) return;
+    if (selectedSkills.map(s => s.toLowerCase()).includes(skill.toLowerCase())) {
+      toast.error("Skill already added");
+      return;
+    }
+    setSelectedSkills([...selectedSkills, skill]);
+    setMultiSkillInput("");
+  };
+
+  const handleRemoveMultiSkill = (skill: string) => {
+    setSelectedSkills(selectedSkills.filter(s => s !== skill));
+  };
+
+  const handleBuildMultiSkillGraph = async () => {
+    if (selectedSkills.length < 2) {
+      toast.error("Select at least 2 skills to build a merged NeuroMap");
+      return;
+    }
+    setIsBuildingMulti(true);
+    try {
+      const skillsEncoded = selectedSkills.map(s => encodeURIComponent(s)).join(",");
+      navigate(`/graph-multi/${skillsEncoded}`);
+    } catch (error) {
+      toast.error("Failed to navigate to merged graph");
+    } finally {
+      setIsBuildingMulti(false);
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -355,6 +408,171 @@ export function Workspace() {
               Generate Graph
             </Button>
           </div>
+        </div>
+
+        {/* Multi-Skill Merger */}
+        <div className="bg-gradient-to-r from-blue-600 to-cyan-600 rounded-2xl p-6 shadow-lg mb-8 text-white">
+          <div className="flex items-center gap-2 mb-2">
+            <Network className="size-5" />
+            <h2 className="font-bold text-lg">Build Combined NeuroMap</h2>
+          </div>
+          <p className="text-blue-100 text-sm mb-4">
+            Merge 2+ skills into one graph. See how topics connect across domains, discover bridge concepts, and learn with optimal interleaved paths.
+          </p>
+          <div className="space-y-3">
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <Input
+                  className="bg-white/10 border-white/30 placeholder:text-blue-200 text-white"
+                  placeholder="e.g. Machine Learning, Linear Algebra, Python..."
+                  value={multiSkillInput}
+                  onChange={(e) => setMultiSkillInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddMultiSkill()}
+                />
+              </div>
+              <Button
+                onClick={handleAddMultiSkill}
+                className="bg-white text-blue-700 hover:bg-blue-50 font-semibold px-5"
+              >
+                <Plus className="size-4 mr-2" />
+                Add
+              </Button>
+            </div>
+            
+            {selectedSkills.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {selectedSkills.map((skill) => (
+                  <div
+                    key={skill}
+                    className="bg-white/20 px-3 py-1.5 rounded-full flex items-center gap-2 text-sm border border-white/30"
+                  >
+                    <span>{skill}</span>
+                    <button
+                      onClick={() => handleRemoveMultiSkill(skill)}
+                      className="text-white/70 hover:text-white ml-1"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Button
+              onClick={handleBuildMultiSkillGraph}
+              disabled={selectedSkills.length < 2 || isBuildingMulti}
+              className="w-full bg-white text-blue-700 hover:bg-blue-50 font-semibold"
+            >
+              {isBuildingMulti ? (
+                <>
+                  <Loader2 className="size-4 mr-2 animate-spin" />
+                  Building…
+                </>
+              ) : (
+                <>
+                  <Network className="size-4 mr-2" />
+                  Merge {selectedSkills.length} Skills
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl p-6 shadow-lg mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-lg">Workspace Hub</h2>
+            <Badge variant="outline" className="text-xs">{savedGraphs.length} saved graphs</Badge>
+          </div>
+
+          <Tabs defaultValue="saved" className="w-full">
+            <TabsList className="grid grid-cols-2 h-9">
+              <TabsTrigger value="saved" className="text-xs">Saved Graphs</TabsTrigger>
+              <TabsTrigger value="guide" className="text-xs">Learning Guide</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="saved" className="mt-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Bookmark className="size-4 text-violet-600" />
+                <p className="text-sm text-gray-700">Open saved AI graphs with full features</p>
+              </div>
+
+              <div className="flex gap-2">
+                <Button size="sm" variant={savedFilter === "all" ? "default" : "outline"} className="h-7 text-[11px]" onClick={() => setSavedFilter("all")}>All</Button>
+                <Button size="sm" variant={savedFilter === "single" ? "default" : "outline"} className="h-7 text-[11px]" onClick={() => setSavedFilter("single")}>Single</Button>
+                <Button size="sm" variant={savedFilter === "merged" ? "default" : "outline"} className="h-7 text-[11px]" onClick={() => setSavedFilter("merged")}>Merged</Button>
+              </div>
+
+              {filteredSavedGraphs.length > 0 ? (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {filteredSavedGraphs.map((graph) => (
+                    <div key={graph.id} className="border rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{graph.title}</p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <Badge variant={graph.type === "merged" ? "default" : "secondary"} className="text-[10px]">
+                              {graph.type === "merged" ? "Merged" : "Single"}
+                            </Badge>
+                            <span className="text-[11px] text-gray-500">{graph.topicCount} topics • {graph.edgeCount} edges</span>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 w-7 p-0"
+                          onClick={() => removeSavedGraph(graph.id)}
+                          title="Remove saved graph"
+                        >
+                          <Trash2 className="size-3.5 text-red-500" />
+                        </Button>
+                      </div>
+
+                      <div className="mt-2">
+                        <Link to={graph.route}>
+                          <Button size="sm" className="h-7 text-[11px] bg-violet-600 hover:bg-violet-700 w-full">
+                            Open Graph Tab
+                          </Button>
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">No saved graphs yet. Generate an AI graph, then click Add to NeuroMap.</p>
+              )}
+            </TabsContent>
+
+            <TabsContent value="guide" className="mt-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <Compass className="size-4 text-blue-600" />
+                <p className="text-sm text-gray-700">Suggested way to use NeuroMap effectively</p>
+              </div>
+
+              <div className="space-y-2">
+                <div className="rounded-lg border bg-violet-50 p-3">
+                  <p className="text-sm font-medium text-violet-800">1. Start with a single skill graph</p>
+                  <p className="text-xs text-violet-700 mt-1">Build intuition in one subject and add it to NeuroMap.</p>
+                </div>
+                <div className="rounded-lg border bg-blue-50 p-3">
+                  <p className="text-sm font-medium text-blue-800">2. Save merged graphs for cross-links</p>
+                  <p className="text-xs text-blue-700 mt-1">Use merged graphs to discover bridges across subjects and strengthen transfer learning.</p>
+                </div>
+                <div className="rounded-lg border bg-emerald-50 p-3">
+                  <p className="text-sm font-medium text-emerald-800">3. Use View Graph for the combined map</p>
+                  <p className="text-xs text-emerald-700 mt-1">NeuroMap combines all added topics and links what can be connected from your history.</p>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <Link to="/graph" className="flex-1">
+                  <Button size="sm" variant="outline" className="w-full">Open NeuroMap</Button>
+                </Link>
+                <Link to="/path" className="flex-1">
+                  <Button size="sm" className="w-full bg-blue-600 hover:bg-blue-700">Open Learning Path</Button>
+                </Link>
+              </div>
+            </TabsContent>
+          </Tabs>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">

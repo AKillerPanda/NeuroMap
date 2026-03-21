@@ -22,9 +22,21 @@ export interface TopicRelation {
   strength: number; // 0-1
 }
 
+export interface SavedGraph {
+  id: string;
+  title: string;
+  type: "single" | "merged";
+  skills: string[];
+  route: string;
+  addedAt: number;
+  topicCount: number;
+  edgeCount: number;
+}
+
 interface TopicsContextType {
   topics: Topic[];
   relations: TopicRelation[];
+  savedGraphs: SavedGraph[];
   addTopic: (topic: Omit<Topic, "id">) => void;
   removeTopic: (id: string) => void;
   updateTopic: (id: string, updates: Partial<Topic>) => void;
@@ -36,7 +48,14 @@ interface TopicsContextType {
   addAiGraphToNeuroMap: (graph: {
     nodes: Array<{ id: string; data?: Record<string, unknown> }>;
     edges: Array<{ source: string; target: string }>;
+    metadata?: {
+      title: string;
+      skills: string[];
+      route: string;
+      type: "single" | "merged";
+    };
   }) => { addedTopics: number; addedRelations: number };
+  removeSavedGraph: (id: string) => void;
 }
 
 const TopicsContext = createContext<TopicsContextType | undefined>(undefined);
@@ -54,6 +73,13 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
     // Load from localStorage on init
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("neuromap-relations");
+      return saved ? JSON.parse(saved) : [];
+    }
+    return [];
+  });
+  const [savedGraphs, setSavedGraphs] = useState<SavedGraph[]>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("neuromap-saved-graphs");
       return saved ? JSON.parse(saved) : [];
     }
     return [];
@@ -76,6 +102,12 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
     }
     relationsRef.current = relations;
   }, [relations]);
+
+  React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("neuromap-saved-graphs", JSON.stringify(savedGraphs));
+    }
+  }, [savedGraphs]);
 
   const addTopic = (topic: Omit<Topic, "id">) => {
     const newTopic: Topic = {
@@ -203,6 +235,12 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
   const addAiGraphToNeuroMap = (graph: {
     nodes: Array<{ id: string; data?: Record<string, unknown> }>;
     edges: Array<{ source: string; target: string }>;
+    metadata?: {
+      title: string;
+      skills: string[];
+      route: string;
+      type: "single" | "merged";
+    };
   }): { addedTopics: number; addedRelations: number } => {
     const levelToDifficulty = (level?: string): Topic["difficulty"] => {
       const v = (level ?? "").toLowerCase();
@@ -288,7 +326,35 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
     setTopics((prev) => (topicsToAdd.length > 0 ? [...prev, ...topicsToAdd] : prev));
     setRelations((prev) => (newRelations.length > 0 ? [...prev, ...newRelations] : prev));
 
+    if (graph.metadata) {
+      const normalizedRoute = graph.metadata.route.startsWith("/")
+        ? graph.metadata.route
+        : `/${graph.metadata.route}`;
+      setSavedGraphs((prev) => {
+        const existing = prev.find((g) => g.route === normalizedRoute);
+        const nextEntry: SavedGraph = {
+          id: existing?.id ?? `saved-${Date.now()}-${Math.random().toString(36).substr(2, 7)}`,
+          title: graph.metadata!.title,
+          type: graph.metadata!.type,
+          skills: graph.metadata!.skills,
+          route: normalizedRoute,
+          addedAt: Date.now(),
+          topicCount: graph.nodes.length,
+          edgeCount: graph.edges.length,
+        };
+
+        if (existing) {
+          return prev.map((g) => (g.id === existing.id ? nextEntry : g));
+        }
+        return [nextEntry, ...prev].slice(0, 40);
+      });
+    }
+
     return { addedTopics: topicsToAdd.length, addedRelations: newRelations.length };
+  };
+
+  const removeSavedGraph = (id: string) => {
+    setSavedGraphs((prev) => prev.filter((g) => g.id !== id));
   };
 
   return (
@@ -296,6 +362,7 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
       value={{
         topics,
         relations,
+        savedGraphs,
         addTopic,
         removeTopic,
         updateTopic,
@@ -305,6 +372,7 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
         exportData,
         importData,
         addAiGraphToNeuroMap,
+        removeSavedGraph,
       }}
     >
       {children}

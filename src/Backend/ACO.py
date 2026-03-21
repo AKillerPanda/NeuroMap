@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Any
 
 import numpy as np
 
@@ -372,6 +373,59 @@ class LearningPathACO:
         return result_ids, self.best_cost
 
     # ---- results ----------------------------------------------------------
+    def get_optimal_start_candidates(self, num_candidates: int = 3) -> list[dict[str, Any]]:
+        """
+        Get multiple candidate start points for learning paths.
+        
+        Returns the top foundational topics that could serve as good starting
+        points based on their start_weights (preference for foundational level).
+        
+        Parameters
+        ----------
+        num_candidates : int
+            Number of candidate start points to return
+            
+        Returns
+        -------
+        candidates : list of dict
+            Each dict contains:
+                - "topicId": int   — the topic node ID
+                - "name": str      — topic name
+                - "level": str     — topic difficulty level
+                - "weight": float  — start preference weight (higher = better start)
+        """
+        if self.K == 0 or self.best_path.size == 0:
+            return []
+        
+        # Get available starting topics (those with no prerequisites)
+        available_starts = []
+        for idx in self._get_available(np.zeros(self.K, dtype=bool)):
+            tid = int(self._idx_to_id[idx])
+            weight = float(self._start_weights[idx])
+            topic = self.kg.topics[tid]
+            level_str = topic.level.name.lower() if hasattr(topic.level, "name") else str(topic.level)
+            available_starts.append({
+                "topicId": tid,
+                "name": topic.name,
+                "level": level_str,
+                "weight": weight,
+                "idx": idx,
+            })
+        
+        # Sort by start weight descending (highest weight = best start)
+        available_starts.sort(key=lambda x: x["weight"], reverse=True)
+        
+        # Return top N candidates, excluding the weight field for API response
+        candidates = []
+        for start_data in available_starts[:num_candidates]:
+            candidates.append({
+                "topicId": start_data["topicId"],
+                "name": start_data["name"],
+                "level": start_data["level"],
+            })
+        
+        return candidates
+
     def get_named_path(self) -> list[str]:
         """Return the best path as a list of topic names."""
         if self.best_path.size == 0:

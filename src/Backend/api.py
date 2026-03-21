@@ -446,6 +446,10 @@ def _build_learning_paths(
         if not aco_path:
             raise ValueError("ACO returned empty path — graph may be disconnected")
         aco_ids = [str(tid) for tid in aco_path]
+        
+        # Get candidate start points if there are multiple available
+        start_candidates = aco.get_optimal_start_candidates(num_candidates=3)
+        
         paths.append({
             "id":          "path-aco",
             "name":        "Optimal Path",
@@ -458,6 +462,7 @@ def _build_learning_paths(
             "difficulty":  "intermediate",
             "nodeIds":     aco_ids,
             "convergence": aco.history,
+            "startCandidates": start_candidates,
             "steps":       _steps_with_context(aco_path),
         })
     except Exception as exc:
@@ -773,6 +778,9 @@ def _build_parallel_paths(
         1 for tid_a, tid_b in bridge_id_pairs
         if tid_a in path_set and tid_b in path_set
     )
+    
+    # Get candidate start points for parallel learning
+    start_candidates = aco.get_optimal_start_candidates(num_candidates=3)
 
     paths: list[dict[str, Any]] = [{
         "id":          "path-parallel-aco",
@@ -791,6 +799,7 @@ def _build_parallel_paths(
         "convergence": aco.history,
         "cost":        round(aco_cost, 2),
         "bridges":     bridges_hit,
+        "startCandidates": start_candidates,
     }]
 
     # Per-domain solo paths for reference

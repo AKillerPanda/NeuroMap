@@ -1,5 +1,5 @@
 # Multi-stage build for optimal frontend optimization
-FROM node:18-alpine as builder
+FROM node:22-bookworm-slim as builder
 
 WORKDIR /app
 
@@ -7,7 +7,7 @@ WORKDIR /app
 COPY src/Frontend/package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm ci && npm install --no-save terser
 
 # Copy source code
 COPY src/Frontend .
@@ -16,7 +16,11 @@ COPY src/Frontend .
 RUN npm run build
 
 # Final stage - lightweight Nginx server
-FROM nginx:alpine
+FROM nginx:1.27.5-bookworm
+
+RUN apt-get update && \
+  apt-get upgrade -y && \
+  rm -rf /var/lib/apt/lists/*
 
 # Copy built assets
 COPY --from=builder /app/dist /usr/share/nginx/html

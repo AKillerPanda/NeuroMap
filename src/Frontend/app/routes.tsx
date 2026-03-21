@@ -14,6 +14,7 @@ export const router = createBrowserRouter([
       { path: "workspace", Component: Workspace },
       { path: "graph", Component: Graph },
       { path: "graph/:skill", Component: EnhancedGraph },
+      { path: "graph-multi/:skills", Component: EnhancedGraph },
       { path: "path", Component: LearningPath },
       { path: "*", Component: NotFound },
     ],

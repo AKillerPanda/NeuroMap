@@ -15,9 +15,10 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useTopics } from "../context/TopicsContext";
 import { Button } from "../components/ui/button";
-import { Brain, Home, Route as RouteIcon, ExternalLink, X, ArrowRight, Loader2 } from "lucide-react";
+import { Brain, Home, Route as RouteIcon, ExternalLink, X, ArrowRight, Loader2, Bookmark, Trash2 } from "lucide-react";
 import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { Badge } from "../components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { toast } from "sonner";
 
 const nodeWidth = 200;
@@ -33,7 +34,7 @@ function isSafeUrl(url: string): boolean {
 }
 
 export function Graph() {
-  const { topics, relations, updateTopic } = useTopics();
+  const { topics, relations, updateTopic, savedGraphs, removeSavedGraph } = useTopics();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
@@ -42,6 +43,13 @@ export function Graph() {
   const [gnnScores, setGnnScores] = useState<Record<string, number>>({});
   const [acoPath, setAcoPath] = useState<Array<{ name: string; order: number; reason: string }>>([]);
   const [pathLoading, setPathLoading] = useState(false);
+  const [savedFilter, setSavedFilter] = useState<"all" | "single" | "merged">("all");
+
+  const filteredSavedGraphs = savedGraphs.filter((g) =>
+    savedFilter === "all" ? true : g.type === savedFilter
+  );
+
+  const nextSteps = acoPath.slice(0, 5);
 
   const visibleTopics = showOnlyAiImported
     ? topics.filter((t) => t.importedFromAi)
@@ -441,6 +449,132 @@ export function Graph() {
             {showOnlyAiImported && visibleTopics.length === 0 && (
               <p className="text-[11px] text-gray-400 mt-3">No AI-imported topics yet.</p>
             )}
+          </Panel>
+
+          <Panel position="bottom-left" className="bg-white rounded-lg shadow-lg p-4 m-4 w-[380px] max-h-[52vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-sm">NeuroMap Hub</h3>
+              <Badge variant="outline" className="text-[10px]">{topics.length} topics</Badge>
+            </div>
+
+            <Tabs defaultValue="saved" className="w-full">
+              <TabsList className="grid grid-cols-2 h-8">
+                <TabsTrigger value="saved" className="text-[11px]">Saved Graphs</TabsTrigger>
+                <TabsTrigger value="guide" className="text-[11px]">Learning Guide</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="saved" className="mt-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Bookmark className="size-4 text-violet-600" />
+                    <p className="text-xs font-medium text-gray-700">Your AI graph library</p>
+                  </div>
+                  <Badge variant="outline" className="text-[10px]">{savedGraphs.length}</Badge>
+                </div>
+
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    variant={savedFilter === "all" ? "default" : "outline"}
+                    className="h-7 text-[10px]"
+                    onClick={() => setSavedFilter("all")}
+                  >
+                    All
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={savedFilter === "single" ? "default" : "outline"}
+                    className="h-7 text-[10px]"
+                    onClick={() => setSavedFilter("single")}
+                  >
+                    Single
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={savedFilter === "merged" ? "default" : "outline"}
+                    className="h-7 text-[10px]"
+                    onClick={() => setSavedFilter("merged")}
+                  >
+                    Merged
+                  </Button>
+                </div>
+
+                {filteredSavedGraphs.length > 0 ? (
+                  <div className="space-y-2">
+                    {filteredSavedGraphs.map((graph) => (
+                      <div key={graph.id} className="border rounded-md p-2.5 bg-white hover:bg-violet-50/40 transition-colors">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold truncate">{graph.title}</p>
+                            <div className="flex items-center gap-1 mt-1">
+                              <Badge variant={graph.type === "merged" ? "default" : "secondary"} className="text-[10px] h-5">
+                                {graph.type === "merged" ? "Merged" : "Single"}
+                              </Badge>
+                              <span className="text-[10px] text-gray-500">
+                                {graph.topicCount} topics • {graph.edgeCount} edges
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 w-7 p-0 text-gray-500 hover:text-red-600"
+                            onClick={() => removeSavedGraph(graph.id)}
+                            title="Remove saved graph"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <Link to={graph.route} className="flex-1">
+                            <Button size="sm" className="w-full h-7 text-[11px] bg-violet-600 hover:bg-violet-700">
+                              Open Graph Tab
+                            </Button>
+                          </Link>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400">
+                    No saved graphs in this filter yet. Open an AI graph, then click "Add to NeuroMap".
+                  </p>
+                )}
+              </TabsContent>
+
+              <TabsContent value="guide" className="mt-3 space-y-2">
+                <div className="rounded-md border bg-violet-50 p-2.5">
+                  <p className="text-xs font-semibold text-violet-800">How to learn from your NeuroMap</p>
+                  <p className="text-[11px] text-violet-700 mt-1">
+                    Use saved single graphs for focused mastery, then use merged graphs to understand cross-topic links and build intuition.
+                  </p>
+                </div>
+
+                {pathLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-gray-500 py-2">
+                    <Loader2 className="size-3.5 animate-spin" />
+                    Building recommendations...
+                  </div>
+                ) : nextSteps.length > 0 ? (
+                  <div className="space-y-1.5">
+                    {nextSteps.map((step) => (
+                      <div key={`guide-${step.order}-${step.name}`} className="p-2 border rounded-md bg-white">
+                        <div className="flex items-center gap-2 text-xs font-medium">
+                          <span className="size-5 rounded-full bg-violet-100 text-violet-700 text-[10px] font-bold flex items-center justify-center shrink-0">
+                            {step.order}
+                          </span>
+                          <span className="truncate">{step.name}</span>
+                        </div>
+                        {step.reason && <p className="text-[10px] text-gray-500 mt-1 ml-7 truncate">{step.reason}</p>}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400">Add topics and generate relations to get personalized guidance.</p>
+                )}
+              </TabsContent>
+            </Tabs>
           </Panel>
 
           {selectedTopic && (

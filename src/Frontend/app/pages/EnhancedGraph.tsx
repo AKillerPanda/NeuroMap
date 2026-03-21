@@ -89,6 +89,11 @@ interface LearningPath {
     requires: string[];
     reason: string;
   }>;
+  startCandidates?: Array<{
+    topicId: number;
+    name: string;
+    level: string;
+  }>;
 }
 
 interface CurriculumStats {
@@ -229,9 +234,14 @@ function parseRequestedSkills(input: string): string[] {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function EnhancedGraph() {
-  const { skill } = useParams<{ skill: string }>();
-  const decoded   = skill ? decodeURIComponent(skill) : "";
-  const requestedSkills = useMemo(() => parseRequestedSkills(decoded), [decoded]);
+  const { skill, skills } = useParams<{ skill?: string; skills?: string }>();
+  const decoded   = (skill || skills) ? decodeURIComponent(skill || skills || "") : "";
+  const isMultiRoute = Boolean(skills);
+  const requestedSkills = useMemo(() => {
+    if (!decoded) return [];
+    if (!isMultiRoute) return [decoded.trim()].filter(Boolean);
+    return parseRequestedSkills(decoded);
+  }, [decoded, isMultiRoute]);
   const { addAiGraphToNeuroMap } = useTopics();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
@@ -243,6 +253,7 @@ export function EnhancedGraph() {
   const [paths,        setPaths]        = useState<LearningPath[]>([]);
   const [stats,        setStats]        = useState<CurriculumStats | null>(null);
   const [selectedPath, setSelectedPath] = useState("path-aco");
+  const [selectedStartPoint, setSelectedStartPoint] = useState<number | null>(null);
   const [recs,         setRecs]         = useState<any[]>([]);
   const [progress,     setProgress]     = useState(0);
   const [mastered,     setMastered]     = useState<Set<string>>(new Set());
@@ -327,7 +338,10 @@ export function EnhancedGraph() {
 
       setRawNodes(mergedNodes);
       setPaths(data.paths || []);
-      setStats(data.stats);
+      const normalizedStats = isParallel
+        ? (data.stats?.combined ?? null)
+        : (data.stats ?? null);
+      setStats(normalizedStats);
 
       const defaultPathId = (data.paths as LearningPath[])?.find(p => p.id === "path-aco")?.id
         ?? data.paths?.[0]?.id
@@ -344,8 +358,20 @@ export function EnhancedGraph() {
       setNodes(toFlowNodes(mergedNodes, masteredSet, pathIds));
       setEdges(
         (data.edges as any[]).map(e => ({
-          id: e.id, source: e.source, target: e.target,
-          animated: e.animated, markerEnd: e.markerEnd,
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          animated: e.animated ?? false,
+          markerEnd: e.markerEnd ?? {
+            type: "arrowclosed",
+            width: 20,
+            height: 20,
+            color: "#a78bfa",
+          },
+          style: {
+            stroke: "#c4b5fd",
+            strokeWidth: 2,
+          },
         }))
       );
     } catch (e) {
@@ -503,6 +529,15 @@ export function EnhancedGraph() {
   const selectedSummary = selectedId ? summaryCache[selectedId] : null;
   const selectedRaw     = rawNodes.find(n => n.id === selectedId)?.data ?? null;
   const currentPath     = paths.find(p => p.id === selectedPath);
+  
+  // Calculate progress for current path
+  const pathProgress = useMemo(() => {
+    if (!currentPath || !currentPath.nodeIds || currentPath.nodeIds.length === 0) {
+      return 0;
+    }
+    const masteredInPath = currentPath.nodeIds.filter(id => mastered.has(id)).length;
+    return masteredInPath / currentPath.nodeIds.length;
+  }, [currentPath, mastered]);
 
   const handleAddToNeuroMap = useCallback(() => {
     if (rawNodes.length === 0) {
@@ -510,18 +545,32 @@ export function EnhancedGraph() {
       return;
     }
     try {
+      const isMergedGraph = requestedSkills.length > 1;
+      const canonicalRoute = isMergedGraph
+        ? `/graph-multi/${requestedSkills.map((s) => encodeURIComponent(s)).join(",")}`
+        : `/graph/${encodeURIComponent(decoded)}`;
+      const graphTitle = isMergedGraph
+        ? requestedSkills.join(" + ")
+        : decoded;
+
       const result = addAiGraphToNeuroMap({
         nodes: rawNodes,
         edges: edges.map((e) => ({ source: e.source, target: e.target })),
+        metadata: {
+          title: graphTitle,
+          skills: requestedSkills.length > 0 ? requestedSkills : [decoded],
+          route: canonicalRoute,
+          type: isMergedGraph ? "merged" : "single",
+        },
       });
       setAddedToNeuroMap(true);
-      toast.success(`Added ${result.addedTopics} topic(s) and ${result.addedRelations} relation(s) to NeuroMap`);
+      toast.success(`Saved graph and added ${result.addedTopics} topic(s), ${result.addedRelations} relation(s) to NeuroMap`);
     } catch (error) {
       setAddedToNeuroMap(false);
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Could not add graph to NeuroMap: ${message}`);
     }
-  }, [rawNodes, edges, addAiGraphToNeuroMap]);
+  }, [rawNodes, edges, addAiGraphToNeuroMap, requestedSkills, decoded]);
 
   // ── Loading / error ─────────────────────────────────────────────────────────
 
@@ -563,12 +612,17 @@ export function EnhancedGraph() {
           </Link>
 
           <div className="flex items-center gap-3 shrink-0">
-            {/* Progress */}
-            <div className="hidden sm:flex items-center gap-2 min-w-[160px]">
-              <TrendingUp className="size-4 text-emerald-600 shrink-0" />
-              <Progress value={progress * 100} className="h-2 flex-1" />
-              <span className="text-xs font-medium text-gray-600 whitespace-nowrap">
-                {(progress * 100).toFixed(0)}%
+            {/* Path Progress */}
+            <div className="hidden sm:flex items-center gap-2 min-w-[200px] rounded-lg bg-gradient-to-r from-violet-50 to-transparent p-2 border border-violet-100">
+              <TrendingUp className="size-4 text-violet-600 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] text-gray-600 leading-none truncate font-medium">
+                  {currentPath?.name || "Select Path"}
+                </div>
+                <Progress value={pathProgress * 100} className="h-1.5 mt-1" />
+              </div>
+              <span className="text-xs font-bold text-violet-700 whitespace-nowrap">
+                {(pathProgress * 100).toFixed(0)}%
               </span>
             </div>
 
@@ -795,8 +849,8 @@ export function EnhancedGraph() {
                     <p className="text-sm text-gray-600 leading-relaxed">{selectedRaw.description as string}</p>
                   ) : null}
 
-                  {/* Master button */}
-                  {!mastered.has(selectedId) && (
+                  {/* Master button or mastered confirmation */}
+                  {!mastered.has(selectedId) ? (
                     <Button
                       className="w-full bg-emerald-600 hover:bg-emerald-700"
                       onClick={() => masterTopic(selectedId)}
@@ -814,6 +868,14 @@ export function EnhancedGraph() {
                         </>
                       )}
                     </Button>
+                  ) : (
+                    <div className="w-full p-3 rounded-lg bg-emerald-50 border-2 border-emerald-200 flex items-center justify-center gap-2">
+                      <CheckCircle2 className="size-5 text-emerald-600" />
+                      <div className="flex flex-col">
+                        <span className="font-semibold text-emerald-700 text-sm">Mastered!</span>
+                        <span className="text-[10px] text-emerald-600">Keep learning to unlock new topics</span>
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -850,6 +912,44 @@ export function EnhancedGraph() {
                   </Card>
                 ))}
               </div>
+
+              {/* Start Point Candidates for ACO Path */}
+              {selectedPath === "path-aco" && currentPath?.startCandidates && currentPath.startCandidates.length > 0 && (
+                <div className="bg-blue-50 rounded-xl p-3 border border-blue-100 mb-3">
+                  <h4 className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1.5">
+                    <Target className="size-3" />
+                    Optimal Starting Points
+                  </h4>
+                  <p className="text-[10px] text-blue-600 mb-2">Choose where to begin your learning journey:</p>
+                  <div className="space-y-1.5">
+                    {currentPath.startCandidates.map((candidate, idx) => (
+                      <button
+                        key={candidate.topicId}
+                        className={`w-full text-left p-2 rounded-lg border text-xs transition-all ${
+                          selectedStartPoint === candidate.topicId
+                            ? "bg-blue-200 border-blue-400 ring-1 ring-blue-400"
+                            : "bg-white border-blue-200 hover:bg-blue-100 hover:border-blue-300"
+                        }`}
+                        onClick={() => setSelectedStartPoint(candidate.topicId)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={`size-4 rounded border-2 flex items-center justify-center ${
+                            selectedStartPoint === candidate.topicId
+                              ? "bg-blue-500 border-blue-500"
+                              : "border-blue-300"
+                          }`}>
+                            {selectedStartPoint === candidate.topicId && (
+                              <CheckCircle2 className="size-3 text-white" />
+                            )}
+                          </div>
+                          <span className="font-medium truncate">{candidate.name}</span>
+                          <Badge variant="outline" className="text-[9px] ml-auto shrink-0">{candidate.level}</Badge>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {currentPath && (
                 <div className="bg-gray-50 rounded-xl p-3 border border-gray-100">

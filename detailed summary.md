@@ -3,6 +3,7 @@
 ## Executive Summary
 
 NeuroMap has evolved from a single-topic graph prototype into a multi-flow learning platform with:
+
 - AI-generated single-skill and multi-skill knowledge graphs
 - Tandem path optimization with cross-domain bridge logic
 - Persistent overall NeuroMap aggregation
@@ -16,6 +17,7 @@ This document reflects the current implemented state.
 ### 1. Graph Generation and Analysis
 
 Backend graph capabilities are implemented in src/Backend/graph.py and include:
+
 - DAG-based prerequisite modeling
 - Topological depth and ordering utilities
 - Spectral operations (Laplacian, Fiedler, clustering, connectivity)
@@ -24,6 +26,7 @@ Backend graph capabilities are implemented in src/Backend/graph.py and include:
 ### 2. API Layer
 
 The backend Flask API in src/Backend/api.py currently includes:
+
 - Generation endpoints:
   - POST /api/generate
   - POST /api/generate-parallel
@@ -50,6 +53,7 @@ The API also uses in-memory LRU graph storage and per-graph locking for safer co
 Difficulty scoring is integrated through src/Backend/difficulty_gnn.py with runtime lazy import in src/Backend/api.py.
 
 Current behavior:
+
 - Preferred path: GNN-based difficulty prediction and recommendations
 - Fallback path: heuristic scoring when torch/model dependencies are unavailable
 
@@ -58,6 +62,7 @@ The fallback is intentional so the app remains operational in constrained enviro
 ### 4. Learning Path Optimization
 
 ACO logic in src/Backend/ACO.py supports:
+
 - Standard single-graph path optimization
 - Parallel/tandem path optimization with domain-aware bridge behavior
 - Dynamic transition shaping for tandem mode:
@@ -70,6 +75,7 @@ This aligns tandem sequencing with realistic learner readiness.
 ### 5. Resource Discovery
 
 Scraping and plan assembly in src/Backend/Webscraping.py supports:
+
 - Multi-source collection (Wikipedia API, GeeksforGeeks, GitHub, DuckDuckGo)
 - Playlist-oriented discovery and ranking
 - Per-step resource attachment with deduplication
@@ -77,6 +83,7 @@ Scraping and plan assembly in src/Backend/Webscraping.py supports:
 ### 6. Frontend Experience
 
 Frontend implementation in src/Frontend includes:
+
 - AI graph page: src/Frontend/app/pages/EnhancedGraph.tsx
   - Graph generation, difficulty retrieval, summaries, mastery actions
   - Add-to-NeuroMap flow for importing generated structures
@@ -92,6 +99,7 @@ Frontend implementation in src/Frontend includes:
 ## Data and State Model
 
 Current state model combines:
+
 - Backend ephemeral graph cache for generated skill graphs
 - Frontend persistent local topic/relation state for the overall map
 
@@ -107,18 +115,22 @@ This dual-model architecture enables responsive AI generation while preserving u
 ## Recommended Next Milestones
 
 1. Persistence and Identity
+
 - Add backend persistence (user profiles, saved maps, progress history)
 - Add authentication and secure sync
 
-2. Reliability and Observability
+1. Reliability and Observability
+
 - Add structured logging and request tracing
 - Add endpoint-level integration tests
 
-3. Learning Quality
+1. Learning Quality
+
 - Improve bridge detection beyond string similarity
 - Introduce confidence-weighted recommendations and ranking
 
-4. Product UX
+1. Product UX
+
 - Add explainable path mode toggles (difficulty-heavy vs integration-heavy)
 - Add export/import formats and collaboration features
 
