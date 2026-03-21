@@ -1,8 +1,11 @@
+import csv
+import os
 import bs4 as bs
 import requests
 import re
 import json
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from urllib.parse import quote_plus, quote, unquote, urlparse, parse_qs
@@ -21,23 +24,25 @@ _SESSION.headers.update({
 	"Accept-Language": "en-US,en;q=0.9",
 })
 
-_TIMEOUT = 15  # seconds
-_RETRY_DELAY = 1.0  # seconds between retries
+_REQUEST_TIMEOUT = float(os.getenv("SCRAPE_REQUEST_TIMEOUT_S", "5"))
+_RETRY_DELAY = float(os.getenv("SCRAPE_RETRY_DELAY_S", "0.4"))
+_MAX_RETRIES = int(os.getenv("SCRAPE_MAX_RETRIES", "0"))
+_SOURCE_TIMEOUT = float(os.getenv("SCRAPE_SOURCE_TIMEOUT_S", "10"))
 
 
 def _get(url: str, **kwargs) -> requests.Response | None:
-	"""GET with one retry on transient failure."""
-	for attempt in range(2):
+	"""GET with bounded timeout and optional retry for transient failures."""
+	for attempt in range(_MAX_RETRIES + 1):
 		try:
-			resp = _SESSION.get(url, timeout=_TIMEOUT, **kwargs)
+			resp = _SESSION.get(url, timeout=_REQUEST_TIMEOUT, **kwargs)
 			if resp.status_code == 429:
 				time.sleep(_RETRY_DELAY * (attempt + 1))
 				continue
 			resp.raise_for_status()
 			return resp
 		except requests.exceptions.RequestException as e:
-			if attempt == 0:
-				time.sleep(_RETRY_DELAY)
+			if attempt < _MAX_RETRIES:
+				time.sleep(_RETRY_DELAY * (attempt + 1))
 			else:
 				print(f"[scrape] error fetching {url}: {e}")
 	return None
@@ -562,37 +567,41 @@ def get_learning_plan(topic: str) -> LearningPlan:
 	ddg_items: list[dict] = []
 
 	with ThreadPoolExecutor(max_workers=4) as pool:
-		future_wiki = pool.submit(_fetch_wikipedia_api, topic)
-		future_gfg  = pool.submit(_scrape_geeksforgeeks, topic)
-		future_gh   = pool.submit(_scrape_github_awesome, topic)
-		future_ddg  = pool.submit(_fetch_duckduckgo, topic)
-		future_play = pool.submit(_fetch_playlist_resources, topic)
+		futures = {
+			pool.submit(_fetch_wikipedia_api, topic): "wiki",
+			pool.submit(_scrape_geeksforgeeks, topic): "gfg",
+			pool.submit(_scrape_github_awesome, topic): "gh",
+			pool.submit(_fetch_duckduckgo, topic): "ddg",
+			pool.submit(_fetch_playlist_resources, topic): "play",
+		}
 
-		# Collect results (with exception handling per source)
+		# Collect what finishes within a global budget so one slow source does not
+		# hold the whole response hostage.
 		try:
-			wiki_summary, wiki_sections = future_wiki.result(timeout=30)
-		except Exception:
-			wiki_summary, wiki_sections = "", []
+			for fut in as_completed(futures, timeout=_SOURCE_TIMEOUT):
+				src = futures[fut]
+				try:
+					result = fut.result()
+				except Exception:
+					continue
 
-		try:
-			gfg_items = future_gfg.result(timeout=30)
+				if src == "wiki":
+					wiki_summary, wiki_sections = result
+				elif src == "gfg":
+					gfg_items = result
+				elif src == "gh":
+					gh_items = result
+				elif src == "ddg":
+					ddg_items = result
+				elif src == "play":
+					playlist_items = result
 		except Exception:
-			gfg_items = []
+			# TimeoutError from as_completed is expected when a source exceeds budget.
+			pass
 
-		try:
-			gh_items = future_gh.result(timeout=30)
-		except Exception:
-			gh_items = []
-
-		try:
-			ddg_items = future_ddg.result(timeout=30)
-		except Exception:
-			ddg_items = []
-
-		try:
-			playlist_items = future_play.result(timeout=30)
-		except Exception:
-			playlist_items = []
+		for fut in futures:
+			if not fut.done():
+				fut.cancel()
 
 	if wiki_summary:
 		plan.summary = wiki_summary

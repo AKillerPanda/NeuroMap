@@ -159,6 +159,12 @@ _graph_lock = threading.Lock()
 _kg_locks: dict[str, threading.Lock] = {}
 _kg_locks_lock = threading.Lock()
 
+# In-memory cache for scraped specs to avoid repeated slow network scraping.
+_SPEC_CACHE_MAX = int(os.getenv("SPEC_CACHE_MAX", "128"))
+_SPEC_CACHE_TTL_S = int(os.getenv("SPEC_CACHE_TTL_S", "3600"))
+_spec_cache: OrderedDict[str, tuple[float, list[dict]]] = OrderedDict()
+_spec_cache_lock = threading.Lock()
+
 def _get_kg_lock(key: str) -> threading.Lock:
     """Return (creating if necessary) the per-graph mutation lock for `key`."""
     with _kg_locks_lock:
@@ -189,6 +195,32 @@ def _get_graph(key: str) -> tuple[KnowledgeGraph, list[dict]] | None:
         if entry is not None:
             _graph_store.move_to_end(key)
         return entry
+
+
+def _get_learning_spec_cached(skill: str) -> list[dict]:
+    """Return cached spec for `skill` when fresh, otherwise scrape and cache it."""
+    key = skill.strip().lower()
+    now = time.time()
+
+    with _spec_cache_lock:
+        cached = _spec_cache.get(key)
+        if cached is not None:
+            ts, spec = cached
+            if now - ts <= _SPEC_CACHE_TTL_S:
+                _spec_cache.move_to_end(key)
+                log.info("spec-cache hit  skill=%r", skill)
+                return spec
+            _spec_cache.pop(key, None)
+
+    spec = get_learning_spec(skill)
+
+    with _spec_cache_lock:
+        _spec_cache[key] = (now, spec)
+        _spec_cache.move_to_end(key)
+        while len(_spec_cache) > _SPEC_CACHE_MAX:
+            _spec_cache.popitem(last=False)
+
+    return spec
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -920,7 +952,7 @@ def generate_graph():
 
     try:
         # 1. Webscrape subtopics
-        spec = get_learning_spec(skill)
+        spec = _get_learning_spec_cached(skill)
         t_scrape = time.time() - t0
         if not spec:
             return jsonify({"error": f"no subtopics found for '{skill}'"}), 404
@@ -1714,7 +1746,7 @@ def generate_parallel():
     try:
         # 1. Scrape all topics concurrently
         with ThreadPoolExecutor(max_workers=min(len(skills), 6)) as ex:
-            futures = {skill: ex.submit(get_learning_spec, skill) for skill in skills}
+            futures = {skill: ex.submit(_get_learning_spec_cached, skill) for skill in skills}
             specs: dict[str, list[dict]] = {skill: fut.result() for skill, fut in futures.items()}
         t_scrape = time.time() - t0
 

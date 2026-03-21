@@ -13,7 +13,7 @@
  *  5. AI-generated summaries from /api/summary (GNN + structural analysis)
  */
 
-import { useEffect, useState, useCallback, useMemo, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useParams, Link } from "react-router";
 import {
   ReactFlow,
@@ -253,6 +253,8 @@ export function EnhancedGraph() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const [loading,      setLoading]      = useState(true);
+  const [loadingStage, setLoadingStage] = useState("Scraping topics…");
+  const [diffLoading,  setDiffLoading]  = useState(false);
   const [error,        setError]        = useState<string | null>(null);
   const [rawNodes,     setRawNodes]     = useState<any[]>([]);
   const [paths,        setPaths]        = useState<LearningPath[]>([]);
@@ -276,6 +278,7 @@ export function EnhancedGraph() {
   const [addOpen,      setAddOpen]      = useState(false);
   const [newTopic,     setNewTopic]     = useState("");
   const [addingTopic,  setAddingTopic]  = useState(false);
+  const fetchVersionRef = useRef(0);
 
   // ── Build ReactFlow nodes ───────────────────────────────────────────────────
 
@@ -306,6 +309,7 @@ export function EnhancedGraph() {
 
   const fetchGraph = useCallback(async () => {
     if (!decoded) return;
+    const fetchVersion = ++fetchVersionRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -325,19 +329,31 @@ export function EnhancedGraph() {
       setActiveSkillKey(skillKey);
       setSummaryCache({});
 
-      // Fetch difficulty scores — must run after /api/generate stores the graph
-      const dr = await fetch(`/api/difficulty/${encodeURIComponent(skillKey)}`);
-      let diffScores: Record<string, number> = {};
-      if (dr.ok) {
-        const diffData = await dr.json();
-        diffScores = diffData.difficulties ?? {};
-        setRecs(diffData.recommendations ?? []);
+      // Prefer server-provided scores (parallel route), then hydrate single-skill
+      // scores in the background so the graph can render immediately.
+      const serverDiffScores: Record<string, number> = {};
+      if (data.difficultyScores && typeof data.difficultyScores === "object") {
+        for (const [topicId, value] of Object.entries(data.difficultyScores as Record<string, unknown>)) {
+          if (typeof value === "number") {
+            serverDiffScores[topicId] = value;
+          } else if (
+            value &&
+            typeof value === "object" &&
+            "score" in value &&
+            typeof (value as { score?: unknown }).score === "number"
+          ) {
+            serverDiffScores[topicId] = (value as { score: number }).score;
+          }
+        }
       }
 
       // Merge GNN difficulty scores into raw node data
       const mergedNodes = (data.nodes as any[]).map((n: any) => ({
         ...n,
-        data: { ...n.data, difficultyScore: diffScores[n.id] ?? 0.5 },
+        data: {
+          ...n.data,
+          difficultyScore: serverDiffScores[n.id] ?? n.data.difficultyScore ?? 0.5,
+        },
       }));
 
       setRawNodes(mergedNodes);
@@ -378,10 +394,41 @@ export function EnhancedGraph() {
           },
         }))
       );
+
+      // Single-skill route does not include difficulty scores in /api/generate.
+      if (!isParallel) {
+        void (async () => {
+          try {
+            const dr = await fetch(`/api/difficulty/${encodeURIComponent(skillKey)}`);
+            if (!dr.ok || fetchVersion !== fetchVersionRef.current) return;
+            const diffData = await dr.json();
+            if (fetchVersion !== fetchVersionRef.current) return;
+            const diffScores: Record<string, number> = diffData.difficulties ?? {};
+            setRecs(diffData.recommendations ?? []);
+
+            if (Object.keys(diffScores).length > 0) {
+              setRawNodes(prev => prev.map((n: any) => ({
+                ...n,
+                data: { ...n.data, difficultyScore: diffScores[n.id] ?? n.data.difficultyScore ?? 0.5 },
+              })));
+              setNodes(nds => nds.map(n => ({
+                ...n,
+                data: { ...n.data, difficultyScore: diffScores[n.id] ?? (n.data.difficultyScore as number) },
+              })));
+            }
+          } catch {
+            // Non-blocking hydration; keep graph usable even if this call fails.
+          }
+        })();
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (fetchVersion === fetchVersionRef.current) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setLoading(false);
+      if (fetchVersion === fetchVersionRef.current) {
+        setLoading(false);
+      }
     }
   }, [decoded, requestedSkills, toFlowNodes, setNodes, setEdges]);
 
@@ -637,10 +684,7 @@ export function EnhancedGraph() {
       {/* ── Header ── */}
       <header className="bg-white border-b shadow-sm z-20 px-4 py-2.5 shrink-0">
         <div className="flex items-center justify-between gap-4">
-          <Link to="/" className="flex items-center gap-2 min-w-0">
-            <NeuroMapLogo className="size-6 shrink-0" />
-            <span className="font-bold text-gray-800 truncate">{decoded}</span>
-          </Link>
+          <span className="font-bold text-gray-800 truncate min-w-0">{decoded}</span>
 
           <div className="flex items-center gap-3 shrink-0">
             {/* Path Progress */}
@@ -674,6 +718,11 @@ export function EnhancedGraph() {
               <Button variant="ghost" size="sm">
                 <Home className="size-4 mr-1" /> Back
               </Button>
+            </Link>
+
+            <Link to="/" className="flex items-center gap-1.5 pl-1 border-l ml-1">
+              <NeuroMapLogo className="size-5 shrink-0" />
+              <span className="hidden sm:inline text-sm font-bold text-gray-700">NeuroMap</span>
             </Link>
           </div>
         </div>
