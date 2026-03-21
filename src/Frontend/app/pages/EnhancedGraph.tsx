@@ -13,7 +13,7 @@
  *  5. AI-generated summaries from /api/summary (GNN + structural analysis)
  */
 
-import { useEffect, useState, useCallback, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useEffect, useState, useCallback, useMemo, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useParams, Link } from "react-router";
 import {
   ReactFlow,
@@ -40,9 +40,11 @@ import { Input }    from "../components/ui/input";
 import {
   Home, BarChart3, Zap, AlertTriangle, TrendingUp,
   Plus, X, BookOpen, ExternalLink, ChevronRight, CheckCircle2,
-  Layers, ArrowRight, Loader2, Sparkles, Target, Clock,
+  Layers, ArrowRight, Loader2, Sparkles, Target, Clock, Network,
 } from "lucide-react";
 import { NeuroMapLogo } from "../components/NeuroMapLogo";
+import { useTopics } from "../context/TopicsContext";
+import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -217,11 +219,20 @@ function diffBar(score: number) {
   return { pct, col, text };
 }
 
+function parseRequestedSkills(input: string): string[] {
+  return input
+    .split(/\s*(?:,|&|\+|\band\b|\bwith\b|\bin tandem\b)\s*/i)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function EnhancedGraph() {
   const { skill } = useParams<{ skill: string }>();
   const decoded   = skill ? decodeURIComponent(skill) : "";
+  const requestedSkills = useMemo(() => parseRequestedSkills(decoded), [decoded]);
+  const { addAiGraphToNeuroMap } = useTopics();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -236,6 +247,8 @@ export function EnhancedGraph() {
   const [progress,     setProgress]     = useState(0);
   const [mastered,     setMastered]     = useState<Set<string>>(new Set());
   const [isMastering,  setIsMastering]  = useState(false);
+  const [activeSkillKey, setActiveSkillKey] = useState("");
+  const [addedToNeuroMap, setAddedToNeuroMap] = useState(false);
 
   // Node detail panel
   const [selectedId,     setSelectedId]     = useState<string | null>(null);
@@ -279,16 +292,26 @@ export function EnhancedGraph() {
     setLoading(true);
     setError(null);
     try {
-      const res  = await fetch("/api/generate", {
+      const isParallel = requestedSkills.length > 1;
+      const endpoint = isParallel ? "/api/generate-parallel" : "/api/generate";
+      const payload = isParallel ? { skills: requestedSkills } : { skill: decoded };
+
+      const res  = await fetch(endpoint, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ skill: decoded }),
+        body:    JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(res.statusText);
       const data = await res.json();
 
+      const skillKey = (data.skillKey ?? (isParallel
+        ? requestedSkills.map((s) => s.toLowerCase()).join("+")
+        : decoded.toLowerCase())) as string;
+      setActiveSkillKey(skillKey);
+      setSummaryCache({});
+
       // Fetch difficulty scores — must run after /api/generate stores the graph
-      const dr = await fetch(`/api/difficulty/${encodeURIComponent(decoded)}`);
+      const dr = await fetch(`/api/difficulty/${encodeURIComponent(skillKey)}`);
       let diffScores: Record<string, number> = {};
       if (dr.ok) {
         const diffData = await dr.json();
@@ -330,7 +353,7 @@ export function EnhancedGraph() {
     } finally {
       setLoading(false);
     }
-  }, [decoded, toFlowNodes, setNodes, setEdges]);
+  }, [decoded, requestedSkills, toFlowNodes, setNodes, setEdges]);
 
   useEffect(() => { fetchGraph(); }, [fetchGraph]);
 
@@ -349,10 +372,10 @@ export function EnhancedGraph() {
   const onNodeClick = useCallback(async (_: ReactMouseEvent, node: Node) => {
     setSelectedId(node.id);
     setActiveTab("detail");
-    if (!summaryCache[node.id] && decoded) {
+    if (!summaryCache[node.id] && activeSkillKey) {
       setSummaryLoading(true);
       try {
-        const r = await fetch(`/api/summary/${encodeURIComponent(decoded)}/${node.id}`);
+        const r = await fetch(`/api/summary/${encodeURIComponent(activeSkillKey)}/${node.id}`);
         if (r.ok) {
           const d: TopicSummary = await r.json();
           setSummaryCache(p => ({ ...p, [node.id]: d }));
@@ -361,7 +384,7 @@ export function EnhancedGraph() {
         setSummaryLoading(false);
       }
     }
-  }, [decoded, summaryCache]);
+  }, [activeSkillKey, summaryCache]);
 
   // ── Master topic ────────────────────────────────────────────────────────────
 
@@ -374,7 +397,7 @@ export function EnhancedGraph() {
       const r = await fetch("/api/master", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ skill: decoded, topicId }),
+        body:    JSON.stringify({ skill: activeSkillKey, topicId }),
       });
       if (!r.ok) { alert("Request failed"); return; }
       const d = await r.json();
@@ -384,7 +407,7 @@ export function EnhancedGraph() {
         setNodes(nds => nds.map(n =>
           n.id === topicId ? { ...n, data: { ...n.data, mastered: true } } : n
         ));
-        const dr = await fetch(`/api/difficulty/${encodeURIComponent(decoded)}`);
+        const dr = await fetch(`/api/difficulty/${encodeURIComponent(activeSkillKey)}`);
         if (dr.ok) {
           const diffData = await dr.json();
           setRecs(diffData.recommendations ?? []);
@@ -400,7 +423,7 @@ export function EnhancedGraph() {
     } finally {
       setIsMastering(false);
     }
-  }, [decoded, setNodes, isMastering]);
+  }, [activeSkillKey, setNodes, isMastering]);
 
   // ── Dynamic add topic ───────────────────────────────────────────────────────
 
@@ -481,6 +504,19 @@ export function EnhancedGraph() {
   const selectedRaw     = rawNodes.find(n => n.id === selectedId)?.data ?? null;
   const currentPath     = paths.find(p => p.id === selectedPath);
 
+  const handleAddToNeuroMap = useCallback(() => {
+    if (rawNodes.length === 0) {
+      toast.error("No graph data to add yet");
+      return;
+    }
+    const result = addAiGraphToNeuroMap({
+      nodes: rawNodes,
+      edges: edges.map((e) => ({ source: e.source, target: e.target })),
+    });
+    setAddedToNeuroMap(true);
+    toast.success(`Added ${result.addedTopics} topic(s) and ${result.addedRelations} relation(s) to NeuroMap`);
+  }, [rawNodes, edges, addAiGraphToNeuroMap]);
+
   // ── Loading / error ─────────────────────────────────────────────────────────
 
   if (loading) return (
@@ -529,6 +565,16 @@ export function EnhancedGraph() {
                 {(progress * 100).toFixed(0)}%
               </span>
             </div>
+
+            <Button
+              variant={addedToNeuroMap ? "secondary" : "outline"}
+              size="sm"
+              onClick={handleAddToNeuroMap}
+              disabled={addedToNeuroMap}
+            >
+              <Network className="size-4 mr-1" />
+              {addedToNeuroMap ? "Added to NeuroMap" : "Add to NeuroMap"}
+            </Button>
 
             <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
               <Plus className="size-4 mr-1" /> Add Topic

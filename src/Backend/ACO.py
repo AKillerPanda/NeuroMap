@@ -438,16 +438,46 @@ class ParallelLearningACO(LearningPathACO):
     **kwargs        : forwarded to LearningPathACO (m, k_max, alpha, beta, …)
     """
 
-    __slots__ = ("_bridge_id_pairs",)
+    __slots__ = (
+        "_bridge_id_pairs",
+        "_domain_by_idx",
+        "_is_bridge_idx",
+        "_is_foundational_idx",
+        "_is_advanced_or_higher_idx",
+    )
 
     def __init__(
         self,
         kg: KnowledgeGraph,
         bridge_id_pairs: list[tuple[int, int]] | None = None,
+        topic_domains: dict[int, str] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(kg, **kwargs)
         self._bridge_id_pairs: list[tuple[int, int]] = bridge_id_pairs or []
+
+        # Dense-index domain map (A/B/unknown) for transition shaping.
+        self._domain_by_idx = np.array(
+            [topic_domains.get(int(tid), "unknown") if topic_domains else "unknown" for tid in self._idx_to_id],
+            dtype=object,
+        )
+
+        bridge_ids = {
+            tid
+            for a, b in self._bridge_id_pairs
+            for tid in (a, b)
+        }
+        self._is_bridge_idx = np.array([int(tid) in bridge_ids for tid in self._idx_to_id], dtype=bool)
+
+        self._is_foundational_idx = np.array(
+            [self.kg.topics[int(tid)].level == TopicLevel.FOUNDATIONAL for tid in self._idx_to_id],
+            dtype=bool,
+        )
+        self._is_advanced_or_higher_idx = np.array(
+            [self.kg.topics[int(tid)].level in (TopicLevel.ADVANCED, TopicLevel.EXPERT) for tid in self._idx_to_id],
+            dtype=bool,
+        )
+
         if self._bridge_id_pairs:
             self._apply_bridge_bonuses()
 
@@ -473,6 +503,82 @@ class ParallelLearningACO(LearningPathACO):
             self.cost[ib, ia] = max(self.cost[ib, ia] * 0.5, 0.1)
         # Rebuild heuristic to reflect updated costs
         self.eta = 1.0 / (self.cost + 1e-10)
+
+    def _ant_walk(
+        self,
+        visited_buf: np.ndarray,
+        path_buf: np.ndarray,
+    ) -> tuple[int, float]:
+        """
+        Domain-aware ant walk for tandem learning.
+
+        Adds dynamic transition shaping on top of the base ACO objective:
+          1) Penalise unrelated cross-domain jumps.
+          2) Encourage foundational coverage in both domains early.
+          3) Delay bridge-heavy integration until both domains have basics.
+        """
+        visited_buf[:] = False
+        path_len = 0
+        rng = self._rng
+
+        while path_len < self.K:
+            candidates = self._get_available(visited_buf)
+            if candidates.size == 0:
+                break
+
+            if path_len == 0:
+                weights = self._start_weights[candidates]
+            else:
+                prev_idx = path_buf[path_len - 1]
+                weights = self.A[prev_idx, candidates].copy()
+
+                prev_domain = self._domain_by_idx[prev_idx]
+                cand_domains = self._domain_by_idx[candidates]
+                cross_domain = cand_domains != prev_domain
+                cand_is_bridge = self._is_bridge_idx[candidates]
+                cand_is_foundational = self._is_foundational_idx[candidates]
+                cand_is_advanced = self._is_advanced_or_higher_idx[candidates]
+
+                visited_idxs = path_buf[:path_len]
+                visited_domains = self._domain_by_idx[visited_idxs]
+                visited_foundational = self._is_foundational_idx[visited_idxs]
+
+                found_a = bool(np.any((visited_domains == "A") & visited_foundational))
+                found_b = bool(np.any((visited_domains == "B") & visited_foundational))
+                both_domains_warmed = found_a and found_b
+
+                # Strong penalty for unrelated domain switches.
+                unrelated_jump = cross_domain & ~cand_is_bridge
+                weights[unrelated_jump] *= 0.55
+
+                # Before both foundations are covered, prefer foundational nodes
+                # and delay integration-heavy bridge/advanced transitions.
+                if not both_domains_warmed:
+                    weights[cand_is_foundational] *= 1.35
+                    weights[cand_is_bridge] *= 0.45
+                    weights[cand_is_advanced] *= 0.60
+                else:
+                    # Once both domains have foundations, explicitly reward
+                    # bridge transitions to integrate knowledge.
+                    weights[cand_is_bridge] *= 1.35
+
+            w_min = weights.min()
+            if w_min <= 0.0:
+                weights = weights - w_min + 1e-10
+
+            cumsum = weights.cumsum()
+            r = rng.random() * cumsum[-1]
+            chosen = candidates[np.searchsorted(cumsum, r)]
+
+            path_buf[path_len] = chosen
+            visited_buf[chosen] = True
+            path_len += 1
+
+        if path_len < 2:
+            return path_len, 0.0
+        p = path_buf[:path_len]
+        total_cost = float(self.cost[p[:-1], p[1:]].sum())
+        return path_len, total_cost
 
 
 # ---------------------------------------------------------------------------

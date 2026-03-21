@@ -17,64 +17,109 @@ interface PathStep {
 export function LearningPath() {
   const { topics, relations, updateTopic } = useTopics();
   const [learningPath, setLearningPath] = useState<PathStep[]>([]);
+  const [pathMethod, setPathMethod] = useState<"aco" | "heuristic">("heuristic");
 
   useEffect(() => {
     if (topics.length === 0) return;
 
-    // Generate an optimal learning path based on prerequisites and difficulty
-    const path: PathStep[] = [];
-    const processed = new Set<string>();
-    const topicMap = new Map(topics.map((t) => [t.id, t]));
+    const buildHeuristicPath = () => {
+      const path: PathStep[] = [];
+      const processed = new Set<string>();
+      const topicMap = new Map(topics.map((t) => [t.id, t]));
 
-    // Helper function to get prerequisites for a topic
-    const getPrerequisites = (topicId: string): Topic[] => {
-      return relations
-        .filter((r) => r.target === topicId && r.type === "prerequisite")
-        .map((r) => topicMap.get(r.source))
-        .filter((t): t is Topic => t !== undefined);
+      const getPrerequisites = (topicId: string): Topic[] => {
+        return relations
+          .filter((r) => r.target === topicId && r.type === "prerequisite")
+          .map((r) => topicMap.get(r.source))
+          .filter((t): t is Topic => t !== undefined);
+      };
+
+      const sortedTopics = [...topics].sort((a, b) => {
+        const difficultyOrder = { beginner: 0, intermediate: 1, advanced: 2 };
+        const diffDiff = difficultyOrder[a.difficulty] - difficultyOrder[b.difficulty];
+        if (diffDiff !== 0) return diffDiff;
+        return a.name.localeCompare(b.name);
+      });
+
+      let order = 1;
+      for (const topic of sortedTopics) {
+        if (!processed.has(topic.id)) {
+          const prerequisites = getPrerequisites(topic.id).filter((p) => processed.has(p.id));
+
+          let reason = "";
+          if (prerequisites.length > 0) {
+            reason = `Builds on: ${prerequisites.map((p) => p.name).join(", ")}`;
+          } else if (topic.difficulty === "beginner") {
+            reason = "Great starting point - foundational topic";
+          } else if (topic.difficulty === "intermediate") {
+            reason = "Intermediate level - requires some background";
+          } else {
+            reason = "Advanced topic - master basics first";
+          }
+
+          path.push({
+            topic,
+            order: order++,
+            prerequisites,
+            reason,
+          });
+          processed.add(topic.id);
+        }
+      }
+
+      setPathMethod("heuristic");
+      setLearningPath(path);
     };
 
-    // Topological sort with difficulty consideration
-    const sortedTopics = [...topics].sort((a, b) => {
-      // First by difficulty
-      const difficultyOrder = { beginner: 0, intermediate: 1, advanced: 2 };
-      const diffDiff = difficultyOrder[a.difficulty] - difficultyOrder[b.difficulty];
-      if (diffDiff !== 0) return diffDiff;
-      
-      // Then alphabetically
-      return a.name.localeCompare(b.name);
-    });
-
-    // Build path
-    let order = 1;
-    for (const topic of sortedTopics) {
-      if (!processed.has(topic.id)) {
-        const prerequisites = getPrerequisites(topic.id).filter((p) =>
-          processed.has(p.id)
-        );
-
-        let reason = "";
-        if (prerequisites.length > 0) {
-          reason = `Builds on: ${prerequisites.map((p) => p.name).join(", ")}`;
-        } else if (topic.difficulty === "beginner") {
-          reason = "Great starting point - foundational topic";
-        } else if (topic.difficulty === "intermediate") {
-          reason = "Intermediate level - requires some background";
-        } else {
-          reason = "Advanced topic - master basics first";
+    const fetchAcoPath = async () => {
+      try {
+        const res = await fetch("/api/aco-path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ topics, relations }),
+        });
+        if (!res.ok) {
+          buildHeuristicPath();
+          return;
+        }
+        const data = await res.json();
+        const steps = Array.isArray(data.path) ? data.path : [];
+        if (steps.length === 0) {
+          buildHeuristicPath();
+          return;
         }
 
-        path.push({
-          topic,
-          order: order++,
-          prerequisites,
-          reason,
-        });
-        processed.add(topic.id);
-      }
-    }
+        const topicMap = new Map(topics.map((t) => [t.name, t]));
+        const path: PathStep[] = steps
+          .map((s: any) => {
+            const topic = topicMap.get(String(s.name));
+            if (!topic) return null;
+            const prereqNames = Array.isArray(s.requires) ? s.requires.map(String) : [];
+            const prerequisites = prereqNames
+              .map((n) => topicMap.get(n))
+              .filter((t): t is Topic => !!t);
+            return {
+              topic,
+              order: Number(s.order) || 0,
+              prerequisites,
+              reason: String(s.reason ?? ""),
+            };
+          })
+          .filter((p): p is PathStep => !!p)
+          .sort((a, b) => a.order - b.order);
 
-    setLearningPath(path);
+        if (path.length === 0) {
+          buildHeuristicPath();
+          return;
+        }
+        setPathMethod("aco");
+        setLearningPath(path);
+      } catch {
+        buildHeuristicPath();
+      }
+    };
+
+    void fetchAcoPath();
   }, [topics, relations]);
 
   const handleToggleStatus = (topicId: string, currentStatus: Topic["status"]) => {
@@ -191,7 +236,12 @@ export function LearningPath() {
 
         {/* Learning Path */}
         <div className="bg-white rounded-2xl p-6 shadow-lg">
-          <h2 className="font-semibold mb-6">Recommended Learning Path</h2>
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="font-semibold">Recommended Learning Path</h2>
+            <Badge variant={pathMethod === "aco" ? "default" : "outline"}>
+              {pathMethod === "aco" ? "ACO Optimized" : "Heuristic Fallback"}
+            </Badge>
+          </div>
           <div className="space-y-6">
             {learningPath.map((step, index) => (
               <div key={step.topic.id}>

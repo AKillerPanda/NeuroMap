@@ -4,6 +4,7 @@ import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { toast } from "sonner";
 import { useRef } from "react";
 import { useState } from "react";
+import { useEffect } from "react";
 import { Link, useNavigate } from "react-router";
 import { useTopics } from "../context/TopicsContext";
 import { Button } from "../components/ui/button";
@@ -22,7 +23,122 @@ export function Workspace() {
   const [difficulty, setDifficulty] = useState<"beginner" | "intermediate" | "advanced">("beginner");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [aiSkill, setAiSkill] = useState("");
+  const [spellSuggestions, setSpellSuggestions] = useState<string[]>([]);
+  const [isCheckingSpelling, setIsCheckingSpelling] = useState(false);
+  const [topicSpellSuggestions, setTopicSpellSuggestions] = useState<string[]>([]);
+  const [isCheckingTopicSpelling, setIsCheckingTopicSpelling] = useState(false);
   const navigate = useNavigate();
+
+  const buildCorrectionOptions = (
+    originalText: string,
+    results: Array<{ original: string; suggestions: Array<{ word: string; score: number }> }>
+  ): string[] => {
+    const originalTokens = originalText.trim().split(/\s+/).filter(Boolean);
+    if (originalTokens.length === 0 || results.length !== originalTokens.length) return [];
+
+    const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+    const options: string[] = [];
+
+    // Primary full-phrase correction using best suggestion per token.
+    const primaryTokens = results.map((r, i) => {
+      const best = r.suggestions?.[0]?.word?.trim();
+      return best || originalTokens[i];
+    });
+    const primary = primaryTokens.join(" ");
+    if (!same(primary, originalText)) options.push(primary);
+
+    // Additional candidates: vary one token at a time with top SDS suggestions.
+    for (let i = 0; i < results.length; i++) {
+      const suggestions = (results[i].suggestions || [])
+        .map((s) => s.word?.trim())
+        .filter((w): w is string => !!w)
+        .slice(0, 3);
+
+      for (const suggestion of suggestions) {
+        if (same(suggestion, originalTokens[i])) continue;
+        const tokens = [...originalTokens];
+        tokens[i] = suggestion;
+        const candidate = tokens.join(" ");
+        if (!same(candidate, originalText)) options.push(candidate);
+      }
+    }
+
+    return [...new Set(options)].slice(0, 6);
+  };
+
+  useEffect(() => {
+    const text = aiSkill.trim();
+    if (text.length < 2) {
+      setSpellSuggestions([]);
+      setIsCheckingSpelling(false);
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setIsCheckingSpelling(true);
+      try {
+        const res = await fetch("/api/spell-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, top_k: 5 }),
+        });
+        if (!res.ok) {
+          setSpellSuggestions([]);
+          return;
+        }
+
+        const data = await res.json();
+        const results = Array.isArray(data?.results)
+          ? data.results as Array<{ original: string; suggestions: Array<{ word: string; score: number }> }>
+          : [];
+
+        setSpellSuggestions(buildCorrectionOptions(text, results));
+      } catch {
+        setSpellSuggestions([]);
+      } finally {
+        setIsCheckingSpelling(false);
+      }
+    }, 260);
+
+    return () => window.clearTimeout(timer);
+  }, [aiSkill]);
+
+  useEffect(() => {
+    const text = name.trim();
+    if (text.length < 2) {
+      setTopicSpellSuggestions([]);
+      setIsCheckingTopicSpelling(false);
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setIsCheckingTopicSpelling(true);
+      try {
+        const res = await fetch("/api/spell-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, top_k: 5 }),
+        });
+        if (!res.ok) {
+          setTopicSpellSuggestions([]);
+          return;
+        }
+
+        const data = await res.json();
+        const results = Array.isArray(data?.results)
+          ? data.results as Array<{ original: string; suggestions: Array<{ word: string; score: number }> }>
+          : [];
+
+        setTopicSpellSuggestions(buildCorrectionOptions(text, results));
+      } catch {
+        setTopicSpellSuggestions([]);
+      } finally {
+        setIsCheckingTopicSpelling(false);
+      }
+    }, 260);
+
+    return () => window.clearTimeout(timer);
+  }, [name]);
 
   const handleAddTopic = () => {
     if (!name.trim()) {
@@ -196,13 +312,41 @@ export function Workspace() {
             Enter any skill or subject and instantly generate a spectral knowledge graph with AI-predicted difficulty, personalized learning paths, and per-topic explanations.
           </p>
           <div className="flex gap-3">
-            <Input
-              className="bg-white/10 border-white/30 placeholder:text-violet-200 text-white flex-1"
-              placeholder="e.g. Machine Learning, Calculus, React..."
-              value={aiSkill}
-              onChange={(e) => setAiSkill(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleGenerateAiGraph()}
-            />
+            <div className="flex-1 relative">
+              <Input
+                className="bg-white/10 border-white/30 placeholder:text-violet-200 text-white"
+                placeholder="e.g. Machine Learning, Calculus, React..."
+                value={aiSkill}
+                onChange={(e) => setAiSkill(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleGenerateAiGraph()}
+              />
+
+              {(isCheckingSpelling || spellSuggestions.length > 0) && (
+                <div className="absolute left-0 right-0 mt-2 bg-white text-gray-800 rounded-lg shadow-xl border border-violet-100 z-20 overflow-hidden">
+                  {isCheckingSpelling && (
+                    <div className="px-3 py-2 text-xs text-gray-500">Checking spelling…</div>
+                  )}
+
+                  {!isCheckingSpelling && spellSuggestions.length > 0 && (
+                    <>
+                      <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-violet-600 font-semibold">
+                        Did you mean
+                      </div>
+                      {spellSuggestions.map((option) => (
+                        <button
+                          key={`spell-option-${option}`}
+                          type="button"
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-violet-50"
+                          onClick={() => setAiSkill(option)}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             <Button
               onClick={handleGenerateAiGraph}
               className="bg-white text-violet-700 hover:bg-violet-50 font-semibold px-5"
@@ -222,13 +366,41 @@ export function Workspace() {
               <div className="space-y-4">
                 <div>
                   <Label htmlFor="name">Topic Name *</Label>
-                  <Input
-                    id="name"
-                    placeholder="e.g., Linear Algebra, React Hooks, Quantum Mechanics"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleAddTopic()}
-                  />
+                  <div className="relative">
+                    <Input
+                      id="name"
+                      placeholder="e.g., Linear Algebra, React Hooks, Quantum Mechanics"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleAddTopic()}
+                    />
+
+                    {(isCheckingTopicSpelling || topicSpellSuggestions.length > 0) && (
+                      <div className="absolute left-0 right-0 mt-2 bg-white text-gray-800 rounded-lg shadow-xl border border-violet-100 z-20 overflow-hidden">
+                        {isCheckingTopicSpelling && (
+                          <div className="px-3 py-2 text-xs text-gray-500">Checking spelling…</div>
+                        )}
+
+                        {!isCheckingTopicSpelling && topicSpellSuggestions.length > 0 && (
+                          <>
+                            <div className="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-violet-600 font-semibold">
+                              Did you mean
+                            </div>
+                            {topicSpellSuggestions.map((option) => (
+                              <button
+                                key={`topic-spell-option-${option}`}
+                                type="button"
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-violet-50"
+                                onClick={() => setName(option)}
+                              >
+                                {option}
+                              </button>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div>
@@ -318,6 +490,11 @@ export function Workspace() {
                             <Badge className={getDifficultyColor(topic.difficulty)} variant="secondary">
                               {topic.difficulty}
                             </Badge>
+                            {topic.importedFromAi && (
+                              <Badge className="bg-violet-100 text-violet-700" variant="secondary">
+                                AI Imported
+                              </Badge>
+                            )}
                           </div>
                           {topic.description && (
                             <p className="text-sm text-gray-600 mb-2">{topic.description}</p>

@@ -1,197 +1,155 @@
-# NeuroMap: Intelligent Learning Assistant
+# NeuroMap
 
-**Transform any subject into a dynamic topological knowledge graph.**
+NeuroMap is an AI-assisted learning platform that converts a topic into an explorable knowledge graph with prerequisites, learning paths, resources, and progress tracking.
 
-NeuroMap is an AI-powered platform that automatically generates a structured map showing how concepts interconnect. Instead of learning topics in isolation, NeuroMap reveals:
+It combines:
 
-- **Prerequisite relationships** — what you must learn first
-- **Conceptual overlaps** — where disciplines intersect  
-- **Hierarchical topic structures** — how topics relate at different levels
-- **Hidden connections** — unexpected bridges between domains
+- Spectral graph analysis for graph quality and structure
+- GNN-based difficulty estimation (with fallback heuristics)
+- Ant Colony Optimization (ACO) for path sequencing
+- Multi-source resource scraping for practical study links
 
-By leveraging **spectral graph theory**, **Graph Attention Networks**, and **Ant Colony Optimization**, NeuroMap turns fragmented information into an intuitive, navigable knowledge network, making learning more efficient, contextual, and engaging.
+## Current Product Scope
 
----
+NeuroMap currently supports two major learning workflows:
 
-## 🚀 Key Features
+1. AI Knowledge Graph mode:
 
-### Intelligent Knowledge Graph
-- **Spectral Laplacian Embedding** — Uses eigenvectors of the graph Laplacian for optimal 2D layout
-- **Topological Analysis** — Computes algebraic connectivity, spectral gap, and graph partitions
-- **Automatic Resource Discovery** — Scrapes Wikipedia, GeeksforGeeks, GitHub, and more
-- **Hierarchical Prerequisite Structure** — Ensures you never hit a knowledge gap
+- Generate topic maps from a skill prompt
+- Run single-skill or tandem multi-skill generation
+- Show node-level difficulty, recommendations, and summaries
+- Add generated graphs into the persistent overall NeuroMap
 
-### AI-Powered Learning Paths
-- **Graph Attention Networks (GAT)** — Predicts per-topic difficulty with plain-English explanations
-- **Ant Colony Optimization** — Finds smooth learning curves that minimize cognitive load
-- **Multiple Path Options** — Complete / Optimal (ACO) / Quick Start variants
-- **Real-time Mastery Tracking** — Prerequisites validated as you progress
+1. Overall NeuroMap mode:
 
-### Curriculum Insights
-- **Curriculum Cohesion** — How tightly interconnected topics are (λ₂ algebraic connectivity)
-- **Bottleneck Risk** — Identifies topics that act as gatekeepers
-- **Prerequisite Load** — Warns of overly sequential or branch-heavy curricula
-- **Learning Shape** — Shows whether the curriculum is Deep, Balanced, or Broad
+- Maintain your accumulated topics and relationships
+- View an optimized ACO path in the graph view
+- Fetch topic resources on click
+- Score overall-map topic difficulty through backend inference
 
----
+## Key Features
 
-## 🏗️ Architecture
+- AI graph generation with prerequisite-aware structure
+- Tandem multi-skill learning path generation
+- Bridge detection across skills for integration opportunities
+- Dynamic path optimization via ACO
+- Topic mastery state and prerequisite validation
+- Resource aggregation including playlist-oriented links
+- Overall-map difficulty scoring endpoint for ad-hoc topic sets
 
-### Backend (Python)
-- **Flask REST API** — Lightweight, CORS-enabled HTTP server
-- **Spectral Graph Theory** (`graph.py`) — Laplacian eigenvalues, Fiedler vector, embedding
-- **Difficulty Prediction** (`difficulty_gnn.py`) — Self-supervised GAT model
-- **Learning Path Optimization** (`ACO.py`) — Vectorised Ant Colony algorithm
-- **Multi-source Scraping** (`Webscraping.py`) — Concurrent resource discovery
+## Architecture
 
-### Frontend (React + TypeScript)
-- **ReactFlow** — Interactive node-edge graph visualization  
-- **Tailwind CSS** — Responsive, modern design
-- **ShadCN UI** — Accessible component library
-- **EnhancedGraph.tsx** — Spectral layout viewer + mastery tracker
+Backend:
 
----
+- Flask API in src/Backend/api.py
+- Graph + spectral utilities in src/Backend/graph.py
+- Path optimization in src/Backend/ACO.py
+- Difficulty model in src/Backend/difficulty_gnn.py
+- Scraping + plan assembly in src/Backend/Webscraping.py
 
-## 📋 Quick Start
+Frontend:
 
-### Backend Setup
+- Vite + React + TypeScript app in src/Frontend
+- AI graph page in src/Frontend/app/pages/EnhancedGraph.tsx
+- Overall map page in src/Frontend/app/pages/Graph.tsx
+- Shared topic state in src/Frontend/app/context/TopicsContext.tsx
+
+## Setup
+
+### Backend (Windows PowerShell)
+
 ```bash
 cd src/Backend
-python -m venv venv
-source venv/Scripts/activate          # Windows: .\venv\Scripts\activate
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python api.py                          # Runs on http://localhost:5000
+python api.py
 ```
 
-### Frontend Setup
+Backend runs at <http://localhost:5000>.
+
+### Frontend
+
 ```bash
 cd src/Frontend
 npm install
-npm run dev                            # Runs on http://localhost:5173
+npm run dev
 ```
 
-### Use It
-1. Open http://localhost:5173 in your browser
-2. Enter a topic (e.g., "Machine Learning")
-3. NeuroMap automatically generates the graph
-4. Click topics to master them — prerequisites validated in real time
-5. View learning paths and get personalized recommendations
+Frontend runs at <http://localhost:5173> (or the next free Vite port).
 
----
+## API Quick Reference
 
-## 🔗 API Endpoints
+Core generation:
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/api/generate` | Build full knowledge graph |
-| GET | `/api/spectral-positions/{skill}` | Get 2D Fiedler layout |
-| GET | `/api/difficulty/{skill}` | Difficulty predictions + recommendations |
-| GET | `/api/learning-paths/{skill}` | All learning paths |
-| POST | `/api/master` | Mark topic as mastered |
-| POST | `/api/shortest-path` | Minimal path to target |
-| GET | `/api/progress/{skill}` | Current mastery state |
+- POST /api/generate
+- POST /api/generate-parallel
+- POST /api/sub-graph
 
-**Example:**
+Difficulty and summaries:
+
+- GET /api/difficulty/{skill}
+- GET /api/summary/{skill}/{topicId}
+- POST /api/overall-difficulty
+
+Pathing and progression:
+
+- GET /api/learning-paths/{skill}
+- POST /api/aco-path
+- POST /api/master
+- POST /api/shortest-path
+- GET /api/progress/{skill}
+
+Utilities:
+
+- GET /api/spectral-positions/{skill}
+- POST /api/spell-check
+- GET /api/health
+
+Example:
+
 ```bash
 curl -X POST http://localhost:5000/api/generate \
   -H "Content-Type: application/json" \
-  -d '{"skill": "Python Programming"}'
+  -d '{"skill": "Machine Learning"}'
 ```
 
-See [API_INTEGRATION.md](src/Backend/API_INTEGRATION.md) for detailed documentation.
+## Typical Workflow
 
----
+1. Generate an AI graph from one or more skills.
+2. Inspect node details, summaries, and recommended next topics.
+3. Add useful generated nodes into the overall NeuroMap.
+4. Use the overall map to track growth and follow ACO path guidance.
+5. Open node resources for targeted study material.
 
-## 📊 Technical Highlights
+## Notes on Difficulty Model
 
-### Spectral Graph Theory
-- Uses **Laplacian matrix** for global connectivity analysis
-- Computes **Fiedler vector** (2nd eigenvector) for optimal graph bipartition
-- **Algebraic connectivity** λ₂ indicates curriculum tightness
-- **Spectral clustering** auto-groups related topics
+- If torch / model dependencies are unavailable, the backend falls back to heuristic scoring.
+- Fallback keeps the app functional, but model-based scoring quality is lower.
 
-### Graph Attention Networks
-- **10 structural features** per topic (in-degree, depth, level, etc.)
-- **Self-supervised calibration** — no labeled training data needed
-- Generates **plain-English explanations** for each difficulty score
+## Performance Snapshot
 
-### Ant Colony Optimization
-- **Anti-entropy search** with pheromone warm-start
-- **Vectorized NumPy** operations (100-500ms for typical graphs)
-- **Fiedler-distance heuristic** keeps related topics adjacent
-- **Early convergence detection** via stagnation threshold
+- Graph generation: usually bounded by scraping latency
+- Layout and graph analytics: typically tens of milliseconds
+- ACO path optimization: typically sub-second for moderate graph sizes
 
----
+## Documentation
 
-## 🎯 Use Cases
+- Backend API guide: src/Backend/API_INTEGRATION.md
+- Full integration guide: src/INTEGRATION_GUIDE.md
+- Detailed project summary: detailed summary.d
 
-- **Self-Directed Learners** — Create custom curricula for any topic
-- **Educators** — Visualize prerequisite chains and identify gaps
-- **Career Changers** — Structured roadmaps to new skills
-- **Students** — Understand how concepts interconnect
-- **Researchers** — Analyze knowledge graph properties
+## Contributing
 
----
+Contributions are welcome.
 
-## 📈 Performance
+Recommended contribution areas:
 
-- **Graph Generation:** ~2-3 seconds (mostly web scraping)
-- **Spectral Layout:** <50ms
-- **Difficulty Prediction:** <100ms
-- **ACO Optimization:** ~500ms (25 topics)
-- **Total End-to-End:** <4 seconds for typical topics
+- Better source ranking and trust scoring
+- Model quality and calibration improvements
+- Persistence, authentication, and collaboration features
+- Test coverage and CI hardening
 
----
+## License
 
-## 📚 Documentation
-
-- [Backend API Integration Guide](src/Backend/API_INTEGRATION.md)
-- [Full Stack Integration Guide](src/INTEGRATION_GUIDE.md)
-- [Graph Theory Background](#)
-- [GAT Model Details](#)
-- [ACO Algorithm](#)
-
----
-
-## 🛠️ Tech Stack
-
-**Backend:**
-- Flask, PyTorch, PyTorch Geometric
-- SciPy (sparse matrices, eigenvalue decomposition)
-- BeautifulSoup, Requests (web scraping)
-- NumPy (vectorized linear algebra)
-
-**Frontend:**
-- React 18, TypeScript, React Router
-- ReactFlow (graph visualization)
-- Tailwind CSS, ShadCN UI
-- Vite (build tool)
-
----
-
-## 📝 License
-
-This project is open source. See LICENSE for details.
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! Areas for improvement:
-- User accounts & persistent storage
-- Social features (shared learning paths, leaderboards)
-- Additional cursors (Khan Academy, Coursera, etc.)
-- Mobile app
-- Real-time collaboration
-
-Please open an issue or PR.
-
----
-
-## 👁️ Vision Statement
-
-*NeuroMap reimagines how humans learn by making knowledge interconnections visible and navigable. By automating curriculum design through AI, we empower learners to understand not just **what** to learn, but **why** and **in what order**, turning study into an intuitive journey through a living knowledge network.*
-
----
-
-**Happy Learning! 🧠**
+See LICENSE.

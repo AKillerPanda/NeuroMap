@@ -8,7 +8,10 @@ export interface Topic {
   description: string;
   category: string;
   difficulty: "beginner" | "intermediate" | "advanced";
+  difficultyScore?: number;
   status: "not-started" | "in-progress" | "completed";
+  resources?: Array<{ title: string; url: string; source?: string; type?: string }>;
+  importedFromAi?: boolean;
 }
 
 export interface TopicRelation {
@@ -30,6 +33,10 @@ interface TopicsContextType {
   loadDemoData: () => void;
   exportData: () => string;
   importData: (jsonData: string) => boolean;
+  addAiGraphToNeuroMap: (graph: {
+    nodes: Array<{ id: string; data?: Record<string, unknown> }>;
+    edges: Array<{ source: string; target: string }>;
+  }) => { addedTopics: number; addedRelations: number };
 }
 
 const TopicsContext = createContext<TopicsContextType | undefined>(undefined);
@@ -188,6 +195,97 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const addAiGraphToNeuroMap = (graph: {
+    nodes: Array<{ id: string; data?: Record<string, unknown> }>;
+    edges: Array<{ source: string; target: string }>;
+  }): { addedTopics: number; addedRelations: number } => {
+    const levelToDifficulty = (level?: string): Topic["difficulty"] => {
+      const v = (level ?? "").toLowerCase();
+      if (v === "foundational") return "beginner";
+      if (v === "advanced" || v === "expert") return "advanced";
+      return "intermediate";
+    };
+
+    const existingByName = new Map(
+      topics.map((t) => [t.name.trim().toLowerCase(), t.id] as const)
+    );
+
+    const incomingIdToTopicId = new Map<string, string>();
+    const topicsToAdd: Topic[] = [];
+
+    for (const n of graph.nodes) {
+      const raw = (n.data ?? {}) as Record<string, unknown>;
+      const label = String(raw.originalName ?? raw.label ?? "").trim();
+      if (!label) continue;
+
+      const key = label.toLowerCase();
+      const existingId = existingByName.get(key);
+      if (existingId) {
+        incomingIdToTopicId.set(n.id, existingId);
+        continue;
+      }
+
+      const newId = `topic-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      incomingIdToTopicId.set(n.id, newId);
+      existingByName.set(key, newId);
+
+      const sourceSkill = String(raw.sourceSkill ?? "AI Graph").trim();
+      const resourcesRaw = Array.isArray(raw.resources) ? raw.resources : [];
+      const resources = resourcesRaw
+        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .map((r) => ({
+          title: String(r.title ?? "Learning resource"),
+          url: String(r.url ?? "").trim(),
+          source: String(r.source ?? ""),
+          type: String(r.type ?? "link"),
+        }))
+        .filter((r) => r.url.length > 0);
+
+      topicsToAdd.push({
+        id: newId,
+        name: label,
+        description: String(raw.description ?? "").trim(),
+        category: sourceSkill || "AI Graph",
+        difficulty: levelToDifficulty(String(raw.level ?? "")),
+        difficultyScore: (typeof raw.difficultyScore === "number" && Number.isFinite(raw.difficultyScore))
+          ? raw.difficultyScore
+          : undefined,
+        status: "not-started",
+        resources,
+        importedFromAi: true,
+      });
+    }
+
+    const existingRelSet = new Set(
+      relations.map((r) => `${r.source}->${r.target}:${r.type}`)
+    );
+    const newRelations: TopicRelation[] = [];
+    for (const e of graph.edges) {
+      const source = incomingIdToTopicId.get(e.source);
+      const target = incomingIdToTopicId.get(e.target);
+      if (!source || !target || source === target) continue;
+      const key = `${source}->${target}:prerequisite`;
+      if (existingRelSet.has(key)) continue;
+      existingRelSet.add(key);
+      newRelations.push({
+        id: `rel-${source}-${target}`,
+        source,
+        target,
+        type: "prerequisite",
+        strength: 0.8,
+      });
+    }
+
+    if (topicsToAdd.length > 0) {
+      setTopics((prev) => [...prev, ...topicsToAdd]);
+    }
+    if (newRelations.length > 0) {
+      setRelations((prev) => [...prev, ...newRelations]);
+    }
+
+    return { addedTopics: topicsToAdd.length, addedRelations: newRelations.length };
+  };
+
   return (
     <TopicsContext.Provider
       value={{
@@ -201,6 +299,7 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
         loadDemoData,
         exportData,
         importData,
+        addAiGraphToNeuroMap,
       }}
     >
       {children}

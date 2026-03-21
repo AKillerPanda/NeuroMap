@@ -30,6 +30,7 @@ import threading
 import weakref
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from itertools import combinations
 from typing import Any
 
 import numpy as np
@@ -49,10 +50,58 @@ _get_smart_recommendation = None
 def _ensure_difficulty_gnn():
     global _predict_difficulty, _get_difficulty_explanation, _get_smart_recommendation
     if _predict_difficulty is None:
-        from difficulty_gnn import predict_difficulty, get_difficulty_explanation, get_smart_recommendation
-        _predict_difficulty = predict_difficulty
-        _get_difficulty_explanation = get_difficulty_explanation
-        _get_smart_recommendation = get_smart_recommendation
+        try:
+            from difficulty_gnn import predict_difficulty, get_difficulty_explanation, get_smart_recommendation
+            _predict_difficulty = predict_difficulty
+            _get_difficulty_explanation = get_difficulty_explanation
+            _get_smart_recommendation = get_smart_recommendation
+        except Exception as exc:
+            log.warning("difficulty_gnn unavailable; using heuristic fallback: %s", exc)
+
+            def _fallback_predict(kg: KnowledgeGraph, mastered_ids: set[int] | None = None, **_: Any) -> dict[int, float]:
+                level_to_score = {
+                    "foundational": 0.2,
+                    "intermediate": 0.5,
+                    "advanced": 0.75,
+                    "expert": 0.9,
+                }
+                mastered_ids = mastered_ids or set()
+                scores: dict[int, float] = {}
+                for tid, topic in kg.topics.items():
+                    level_str = topic.level.name.lower() if hasattr(topic.level, "name") else str(topic.level)
+                    base = level_to_score.get(level_str, 0.5)
+                    scores[tid] = 0.05 if tid in mastered_ids else base
+                return scores
+
+            def _fallback_explanation(_: KnowledgeGraph, __: int, score: float) -> str:
+                return (
+                    "AI difficulty model is unavailable in this environment, "
+                    f"so a heuristic score ({score:.2f}) based on topic level is shown."
+                )
+
+            def _fallback_recommendation(
+                kg: KnowledgeGraph,
+                mastered_ids: set[int] | None = None,
+                precomputed_scores: dict[int, float] | None = None,
+                **_: Any,
+            ) -> list[dict[str, Any]]:
+                mastered_ids = mastered_ids or set()
+                scores = precomputed_scores or _fallback_predict(kg, mastered_ids)
+                available = [t for t in kg.get_available() if t.topic_id not in mastered_ids]
+                available.sort(key=lambda t: scores.get(t.topic_id, 0.5))
+                return [
+                    {
+                        "topicId": t.topic_id,
+                        "name": t.name,
+                        "difficulty": scores.get(t.topic_id, 0.5),
+                        "reason": "Recommended from prerequisite-ready topics.",
+                    }
+                    for t in available
+                ]
+
+            _predict_difficulty = _fallback_predict
+            _get_difficulty_explanation = _fallback_explanation
+            _get_smart_recommendation = _fallback_recommendation
 
 # ── App setup ───────────────────────────────────────────────────────
 app = Flask(__name__)
@@ -638,7 +687,16 @@ def _build_parallel_paths(
         k_max=min(max(K * 3, 20), 60),
         time_limit=6,
     )
-    aco = ParallelLearningACO(kg_combined, bridge_id_pairs=bridge_id_pairs, **kw)
+    topic_domains = {
+        tid: str(info.get("domain", "unknown"))
+        for tid, info in tid_to_info.items()
+    }
+    aco = ParallelLearningACO(
+        kg_combined,
+        bridge_id_pairs=bridge_id_pairs,
+        topic_domains=topic_domains,
+        **kw,
+    )
     aco_path, aco_cost = aco.optimise()
 
     def _step(tid: int) -> dict[str, Any]:
@@ -1195,6 +1253,251 @@ def get_learning_paths(skill: str):
     return jsonify({"paths": paths, "totalTopics": kg.num_topics})
 
 
+@app.route("/api/aco-path", methods=["POST"])
+def get_aco_path_for_topics():
+    """
+    Compute an ACO-optimized learning path from ad-hoc NeuroMap topics/relations.
+
+    Request JSON:
+    {
+      "topics": [{"id","name","description","difficulty", ...}],
+      "relations": [{"source","target","type", ...}]
+    }
+
+    Response JSON:
+    {
+      "path": [{"topicId","name","order","reason","requires":[]}],
+      "cost": number,
+      "convergence": [...]
+    }
+    """
+    body = request.get_json(silent=True) or {}
+    topics = body.get("topics") or []
+    relations = body.get("relations") or []
+
+    if not isinstance(topics, list) or len(topics) == 0:
+        return jsonify({"error": "topics must be a non-empty array"}), 400
+    if not isinstance(relations, list):
+        return jsonify({"error": "relations must be an array"}), 400
+
+    id_to_topic: dict[str, dict[str, Any]] = {}
+    for t in topics:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id", "")).strip()
+        name = str(t.get("name", "")).strip()
+        if tid and name:
+            id_to_topic[tid] = t
+
+    if not id_to_topic:
+        return jsonify({"error": "no valid topics provided"}), 400
+
+    level_map = {
+        "beginner": "foundational",
+        "intermediate": "intermediate",
+        "advanced": "advanced",
+    }
+
+    prereq_ids_by_target: dict[str, set[str]] = {tid: set() for tid in id_to_topic}
+    for r in relations:
+        if not isinstance(r, dict):
+            continue
+        rtype = str(r.get("type", "")).lower()
+        if rtype not in {"prerequisite", "hierarchical"}:
+            continue
+        source = str(r.get("source", "")).strip()
+        target = str(r.get("target", "")).strip()
+        if source in id_to_topic and target in id_to_topic and source != target:
+            prereq_ids_by_target[target].add(source)
+
+    spec: list[dict[str, Any]] = []
+    for tid, t in id_to_topic.items():
+        name = str(t.get("name", "")).strip()
+        diff = str(t.get("difficulty", "intermediate")).lower()
+        level = level_map.get(diff, "intermediate")
+        prereq_names = [
+            str(id_to_topic[pid].get("name", "")).strip()
+            for pid in sorted(prereq_ids_by_target.get(tid, set()))
+            if pid in id_to_topic
+        ]
+        spec.append({
+            "name": name,
+            "description": str(t.get("description", "") or ""),
+            "level": level,
+            "prerequisite_names": prereq_names,
+            "resources": t.get("resources", []) if isinstance(t.get("resources", []), list) else [],
+        })
+
+    try:
+        kg = KnowledgeGraph.from_spec(spec)
+        K = max(kg.num_topics, 1)
+        aco = LearningPathACO(
+            kg,
+            m=min(max(K * 2, 10), 40),
+            k_max=min(max(K * 3, 20), 60),
+            time_limit=6,
+        )
+        path_ids, cost = aco.optimise()
+
+        steps: list[dict[str, Any]] = []
+        for idx, tid in enumerate(path_ids, start=1):
+            topic = kg.topics.get(tid)
+            if topic is None:
+                continue
+            prereq_names = sorted(kg.topics[p].name for p in topic.prerequisites if p in kg.topics)
+            steps.append({
+                "topicId": str(tid),
+                "name": topic.name,
+                "order": idx,
+                "requires": prereq_names,
+                "reason": (
+                    "Start here — no prerequisites needed"
+                    if not prereq_names
+                    else f"Builds on: {', '.join(prereq_names[:2])}"
+                ),
+            })
+
+        return jsonify({
+            "path": steps,
+            "cost": round(float(cost), 3),
+            "convergence": [round(float(v), 4) for v in aco.history],
+            "totalTopics": kg.num_topics,
+            "method": "aco",
+        })
+    except Exception as exc:
+        log.error("aco-path failed: %s\n%s", exc, traceback.format_exc())
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/overall-difficulty", methods=["POST"])
+def get_overall_difficulty_for_topics():
+    """
+    Predict per-topic difficulty for ad-hoc NeuroMap topics/relations.
+
+    Request JSON:
+    {
+      "topics": [{"id","name","description","difficulty", ...}],
+      "relations": [{"source","target","type", ...}]
+    }
+
+    Response JSON:
+    {
+      "difficulties": {"topicId": score, ...},
+      "recommendations": [{"id","name","difficulty","reason"}, ...]
+    }
+    """
+    _ensure_difficulty_gnn()
+
+    body = request.get_json(silent=True) or {}
+    topics = body.get("topics") or []
+    relations = body.get("relations") or []
+
+    if not isinstance(topics, list) or len(topics) == 0:
+        return jsonify({"error": "topics must be a non-empty array"}), 400
+    if not isinstance(relations, list):
+        return jsonify({"error": "relations must be an array"}), 400
+
+    id_to_topic: dict[str, dict[str, Any]] = {}
+    for t in topics:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id", "")).strip()
+        name = str(t.get("name", "")).strip()
+        if tid and name:
+            id_to_topic[tid] = t
+
+    if not id_to_topic:
+        return jsonify({"error": "no valid topics provided"}), 400
+
+    level_map = {
+        "beginner": "foundational",
+        "intermediate": "intermediate",
+        "advanced": "advanced",
+    }
+
+    # Use id-scoped internal names so duplicate labels do not collide.
+    internal_name_by_id = {
+        tid: f"{str(t.get('name', '')).strip()} [id:{tid}]"
+        for tid, t in id_to_topic.items()
+    }
+
+    prereq_ids_by_target: dict[str, set[str]] = {tid: set() for tid in id_to_topic}
+    for r in relations:
+        if not isinstance(r, dict):
+            continue
+        rtype = str(r.get("type", "")).lower()
+        if rtype not in {"prerequisite", "hierarchical"}:
+            continue
+        source = str(r.get("source", "")).strip()
+        target = str(r.get("target", "")).strip()
+        if source in id_to_topic and target in id_to_topic and source != target:
+            prereq_ids_by_target[target].add(source)
+
+    spec: list[dict[str, Any]] = []
+    for tid, t in id_to_topic.items():
+        diff = str(t.get("difficulty", "intermediate")).lower()
+        level = level_map.get(diff, "intermediate")
+        prereq_names = [
+            internal_name_by_id[pid]
+            for pid in sorted(prereq_ids_by_target.get(tid, set()))
+            if pid in internal_name_by_id
+        ]
+        spec.append({
+            "name": internal_name_by_id[tid],
+            "description": str(t.get("description", "") or ""),
+            "level": level,
+            "prerequisite_names": prereq_names,
+            "resources": t.get("resources", []) if isinstance(t.get("resources", []), list) else [],
+        })
+
+    try:
+        kg = KnowledgeGraph.from_spec(spec)
+        scores = _predict_difficulty(kg, set(), skill_key="overall-neuromap")
+
+        # Map scores back to original topic ids
+        diff_by_topic_id: dict[str, float] = {}
+        kg_id_to_topic_id: dict[int, str] = {}
+        for topic_id, internal_name in internal_name_by_id.items():
+            t = kg.get_topic_by_name(internal_name)
+            if t is None:
+                continue
+            kg_id_to_topic_id[t.topic_id] = topic_id
+            diff_by_topic_id[topic_id] = round(float(scores.get(t.topic_id, 0.5)), 4)
+
+        recommendations_raw = _get_smart_recommendation(
+            kg,
+            set(),
+            skill_key="overall-neuromap",
+            precomputed_scores=scores,
+        )
+
+        recommendations: list[dict[str, Any]] = []
+        for r in recommendations_raw[:10]:
+            topic_id_raw = r.get("topicId", -1)
+            kg_tid = int(topic_id_raw) if str(topic_id_raw).isdigit() else -1
+            if kg_tid < 0:
+                continue
+            original_tid = kg_id_to_topic_id.get(kg_tid)
+            if not original_tid:
+                continue
+            topic_name = str(id_to_topic.get(original_tid, {}).get("name", r.get("name", "")))
+            recommendations.append({
+                "id": original_tid,
+                "name": topic_name,
+                "difficulty": round(float(r.get("difficulty", diff_by_topic_id.get(original_tid, 0.5))), 4),
+                "reason": str(r.get("reason", "")),
+            })
+
+        return jsonify({
+            "difficulties": diff_by_topic_id,
+            "recommendations": recommendations,
+        })
+
+    except Exception as exc:
+        log.error("overall-difficulty failed: %s\n%s", exc, traceback.format_exc())
+        return jsonify({"error": str(exc)}), 500
+
+
 
 @app.route("/api/summary/<skill>/<topic_id>", methods=["GET"])
 def get_topic_summary(skill: str, topic_id: str):
@@ -1336,44 +1639,78 @@ def generate_parallel():
     body = request.get_json(silent=True) or {}
     raw_skills = body.get("skills") or []
     skills = [s.strip() for s in raw_skills if isinstance(s, str) and s.strip()]
-    if len(skills) < 2:
-        return jsonify({"error": "provide at least 2 skills in the 'skills' array"}), 400
+    # De-duplicate while preserving order (case-insensitive)
+    seen: set[str] = set()
+    unique_skills: list[str] = []
+    for s in skills:
+        k = s.lower()
+        if k not in seen:
+            seen.add(k)
+            unique_skills.append(s)
+    skills = unique_skills
 
-    skill_a, skill_b = skills[0], skills[1]
-    if skill_a.lower() == skill_b.lower():
-        return jsonify({"error": "the two skills must be different"}), 400
-    log.info("generate-parallel  skill_a=%r  skill_b=%r", skill_a, skill_b)
+    if len(skills) < 2:
+        return jsonify({"error": "provide at least 2 distinct skills in the 'skills' array"}), 400
+
+    log.info("generate-parallel  skills=%r", skills)
     t0 = time.time()
 
     try:
-        # 1. Scrape both topics concurrently
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            fa = ex.submit(get_learning_spec, skill_a)
-            fb = ex.submit(get_learning_spec, skill_b)
-            spec_a = fa.result()
-            spec_b = fb.result()
+        # 1. Scrape all topics concurrently
+        with ThreadPoolExecutor(max_workers=min(len(skills), 6)) as ex:
+            futures = {skill: ex.submit(get_learning_spec, skill) for skill in skills}
+            specs: dict[str, list[dict]] = {skill: fut.result() for skill, fut in futures.items()}
         t_scrape = time.time() - t0
 
-        if not spec_a:
-            return jsonify({"error": f"no subtopics found for '{skill_a}'"}), 404
-        if not spec_b:
-            return jsonify({"error": f"no subtopics found for '{skill_b}'"}), 404
+        for skill in skills:
+            if not specs.get(skill):
+                return jsonify({"error": f"no subtopics found for '{skill}'"}), 404
 
         # 2. Individual KGs (for per-topic stats + benefits)
-        kg_a = KnowledgeGraph.from_spec(spec_a)
-        kg_b = KnowledgeGraph.from_spec(spec_b)
+        per_skill_kg: dict[str, KnowledgeGraph] = {
+            skill: KnowledgeGraph.from_spec(specs[skill])
+            for skill in skills
+        }
 
-        # 3. Detect bridge concepts (similar topics across domains)
-        bridges = _detect_bridges(spec_a, spec_b)
+        # 3. Detect bridge concepts pairwise across all skills
+        bridges: list[dict[str, Any]] = []
+        for skill_a, skill_b in combinations(skills, 2):
+            pair_bridges = _detect_bridges(specs[skill_a], specs[skill_b])
+            for b in pair_bridges:
+                bridges.append({
+                    "skillA": skill_a,
+                    "skillB": skill_b,
+                    "nameA": b["nameA"],
+                    "nameB": b["nameB"],
+                    "similarity": b["similarity"],
+                    "description": b.get("description", ""),
+                })
 
-        # 4. Build combined spec with domain-prefixed names
-        merged_spec, name_to_info = _build_parallel_spec(skill_a, spec_a, skill_b, spec_b)
+        # 4. Build combined spec with skill-prefixed names
+        merged_spec: list[dict[str, Any]] = []
+        name_to_info: dict[str, dict[str, Any]] = {}
+        for idx, skill_name in enumerate(skills):
+            domain = chr(ord("A") + idx) if idx < 26 else f"S{idx + 1}"
+            for s in specs[skill_name]:
+                pref_name = f"{skill_name} › {s['name']}"
+                merged_spec.append({
+                    "name": pref_name,
+                    "description": s.get("description", ""),
+                    "level": s.get("level", "foundational"),
+                    "prerequisite_names": [f"{skill_name} › {p}" for p in s.get("prerequisite_names", [])],
+                    "resources": s.get("resources", []),
+                })
+                name_to_info[pref_name] = {
+                    "domain": domain,
+                    "skill": skill_name,
+                    "originalName": s["name"],
+                }
 
         # 5. Build combined KG
         t1 = time.time()
         kg_combined = KnowledgeGraph.from_spec(merged_spec)
-        # Map topic_id → domain info
-        tid_to_info: dict[int, dict] = {}
+        # Map topic_id -> domain info
+        tid_to_info: dict[int, dict[str, Any]] = {}
         for s in merged_spec:
             t = kg_combined.get_topic_by_name(s["name"])
             if t is not None:
@@ -1381,13 +1718,21 @@ def generate_parallel():
         t_graph = time.time() - t1
 
         # Store graphs for mastery / shortest-path endpoints
-        _store_graph(skill_a.lower(), (kg_a, spec_a))
-        _store_graph(skill_b.lower(), (kg_b, spec_b))
-        combined_key = f"{skill_a.lower()}+{skill_b.lower()}"
+        for skill_name in skills:
+            _store_graph(skill_name.lower(), (per_skill_kg[skill_name], specs[skill_name]))
+        combined_key = "+".join(s.lower() for s in skills)
         _store_graph(combined_key, (kg_combined, merged_spec))
 
         # 6. Resolve bridge topic IDs in the combined KG
-        bridge_id_pairs = _resolve_bridge_ids(kg_combined, bridges, skill_a, skill_b)
+        bridge_id_pairs: list[tuple[int, int]] = []
+        for b in bridges:
+            pname_a = f"{b['skillA']} › {b['nameA']}"
+            pname_b = f"{b['skillB']} › {b['nameB']}"
+            ta = kg_combined.get_topic_by_name(pname_a)
+            tb = kg_combined.get_topic_by_name(pname_b)
+            if ta is not None and tb is not None:
+                bridge_id_pairs.append((ta.topic_id, tb.topic_id))
+
         bridge_tids = (
             {tid_a for tid_a, _ in bridge_id_pairs} |
             {tid_b for _, tid_b in bridge_id_pairs}
@@ -1406,7 +1751,7 @@ def generate_parallel():
         edges = _build_edges(kg_combined)
         t_layout = time.time() - t2
 
-        # 8. Difficulty prediction on combined graph (GAT meter)
+        # 8. Difficulty prediction on combined graph (GAT meter or heuristic fallback)
         t3 = time.time()
         _ensure_difficulty_gnn()
         diff_scores = _predict_difficulty(kg_combined, skill_key=combined_key)
@@ -1415,35 +1760,131 @@ def generate_parallel():
             node["data"]["difficultyScore"] = round(diff_scores.get(tid, 0.5), 3)
         t_diff = time.time() - t3
 
-        # 9. Parallel ACO paths
+        # 9. Learning paths: specialised 2-skill interleaved path, or multi-skill ACO
         t4 = time.time()
-        paths = _build_parallel_paths(
-            kg_combined, bridge_id_pairs, skill_a, skill_b, tid_to_info, diff_scores
-        )
+        if len(skills) == 2:
+            paths = _build_parallel_paths(
+                kg_combined,
+                bridge_id_pairs,
+                skills[0],
+                skills[1],
+                tid_to_info,
+                diff_scores,
+            )
+        else:
+            K = kg_combined.num_topics
+            aco = LearningPathACO(
+                kg_combined,
+                m=min(max(K * 2, 10), 40),
+                k_max=min(max(K * 3, 20), 60),
+                time_limit=8,
+            )
+            aco_path, aco_cost = aco.optimise()
+
+            def _step(tid: int) -> dict[str, Any]:
+                t = kg_combined.topics[tid]
+                info = tid_to_info.get(tid, {})
+                level_str = t.level.name.lower() if hasattr(t.level, "name") else str(t.level)
+                prereq_names = sorted(
+                    (tid_to_info.get(p, {}).get("originalName") or kg_combined.topics[p].name)
+                    for p in t.prerequisites
+                )
+                return {
+                    "topicId": str(tid),
+                    "name": info.get("originalName", t.name),
+                    "displayName": t.name,
+                    "domain": info.get("domain", "unknown"),
+                    "skill": info.get("skill", ""),
+                    "level": level_str,
+                    "difficulty": round(diff_scores.get(tid, 0.5), 3),
+                    "isBridge": tid in bridge_tids,
+                    "requires": prereq_names,
+                    "reason": (
+                        "Start here — no prerequisites needed"
+                        if not prereq_names
+                        else f"Ready after: {', '.join(prereq_names[:2])}"
+                    ),
+                }
+
+            steps = [_step(tid) for tid in aco_path]
+            paths = [{
+                "id": "path-multiskill-aco",
+                "name": "Multi-Skill Learning Path",
+                "description": (
+                    f"AI-optimised interleaved path across {len(skills)} skills "
+                    f"with {len(bridge_id_pairs)} bridge concept pair(s)."
+                ),
+                "duration": f"{len(aco_path)} topics",
+                "difficulty": "intermediate",
+                "type": "parallel",
+                "skills": skills,
+                "nodeIds": [str(tid) for tid in aco_path],
+                "steps": steps,
+                "convergence": aco.history,
+                "cost": round(aco_cost, 2),
+                "bridges": len(bridge_id_pairs),
+            }]
+
+            topo = kg_combined.learning_order()
+            for skill_name in skills:
+                only_skill_topics = [
+                    t for t in topo
+                    if tid_to_info.get(t.topic_id, {}).get("skill") == skill_name
+                ]
+                paths.append({
+                    "id": f"path-{skill_name.lower().replace(' ', '-')}-solo",
+                    "name": f"{skill_name} Only",
+                    "description": f"Study {skill_name} independently ({len(only_skill_topics)} topics).",
+                    "duration": f"{len(only_skill_topics)} topics",
+                    "difficulty": "intermediate",
+                    "type": "single",
+                    "skills": [skill_name],
+                    "nodeIds": [str(t.topic_id) for t in only_skill_topics],
+                    "steps": [_step(t.topic_id) for t in only_skill_topics],
+                })
         t_paths = time.time() - t4
 
         # 10. Benefits + stats
-        benefits       = _parallel_benefits(bridges, kg_a, kg_b, skill_a, skill_b)
-        stats_a        = _graph_stats(kg_a)
-        stats_b        = _graph_stats(kg_b)
+        if len(skills) == 2:
+            benefits = _parallel_benefits(
+                bridges,
+                per_skill_kg[skills[0]],
+                per_skill_kg[skills[1]],
+                skills[0],
+                skills[1],
+            )
+        else:
+            benefits = {
+                "synergy": {
+                    "score": round(min(len(bridges) / max(len(merged_spec), 1) * 5, 1.0), 3),
+                    "label": "Multi",
+                    "description": (
+                        f"{len(skills)} skills are being learned together with "
+                        f"{len(bridges)} detected cross-skill bridge concept(s)."
+                    ),
+                },
+                "bridges": bridges[:20],
+            }
+
+        per_skill_stats = {skill_name: _graph_stats(per_skill_kg[skill_name]) for skill_name in skills}
         stats_combined = _graph_stats(kg_combined)
 
         elapsed = time.time() - t0
         log.info(
-            "generate-parallel  (%r + %r)  topics=%d+%d  bridges=%d  elapsed=%.2fs",
-            skill_a, skill_b, kg_a.num_topics, kg_b.num_topics, len(bridges), elapsed,
+            "generate-parallel  skills=%r  total_topics=%d  bridges=%d  elapsed=%.2fs",
+            skills, kg_combined.num_topics, len(bridges), elapsed,
         )
 
         return jsonify({
-            "skills":   [skill_a, skill_b],
+            "skills":   skills,
+            "skillKey": combined_key,
             "nodes":    nodes,
             "edges":    edges,
             "paths":    paths,
             "bridges":  bridges,
             "benefits": benefits,
             "stats": {
-                skill_a:    stats_a,
-                skill_b:    stats_b,
+                **per_skill_stats,
                 "combined": stats_combined,
             },
             "difficultyScores": {

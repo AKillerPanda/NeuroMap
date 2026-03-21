@@ -5,7 +5,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from urllib.parse import quote_plus, quote
+from urllib.parse import quote_plus, quote, unquote, urlparse, parse_qs
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +385,161 @@ def _fetch_duckduckgo(topic: str) -> list[dict]:
 	return results
 
 
+def _extract_duckduckgo_redirect_url(href: str) -> str:
+	"""Extract target URL from DuckDuckGo redirect links."""
+	if not href:
+		return ""
+	if href.startswith("/l/?"):
+		href = f"https://duckduckgo.com{href}"
+	if href.startswith("//duckduckgo.com/l/?") or href.startswith("https://duckduckgo.com/l/?"):
+		try:
+			parsed = urlparse(href if href.startswith("http") else f"https:{href}")
+			q = parse_qs(parsed.query)
+			uddg = q.get("uddg", [""])[0]
+			return unquote(uddg) if uddg else ""
+		except Exception:
+			return ""
+	return href
+
+
+def _search_duckduckgo_html(query: str, max_results: int = 15) -> list[dict]:
+	"""Scrape DuckDuckGo HTML results for links and titles."""
+	url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
+	soup = get_soup(url)
+	if soup is None:
+		return []
+
+	results: list[dict] = []
+	for a in soup.select("a.result__a"):
+		title = a.get_text(" ", strip=True)
+		href = a.get("href", "")
+		link = _extract_duckduckgo_redirect_url(href)
+		if not title or not link.startswith("http"):
+			continue
+		results.append({"title": title[:180], "url": link})
+		if len(results) >= max_results:
+			break
+
+	return results
+
+
+def _playlist_quality_score(title: str, url: str) -> int:
+	"""Heuristic ranking for playlist quality using trusted-source/title signals."""
+	t = title.lower()
+	u = url.lower()
+	score = 0
+
+	# Strongly prefer actual YouTube playlists
+	if "youtube.com/playlist" in u:
+		score += 40
+	elif "youtube.com/watch" in u and "list=" in u:
+		score += 30
+
+	# Trusted content/channel signals
+	trusted = [
+		"mit", "stanford", "harvard", "oxford", "caltech", "coursera",
+		"edx", "freecodecamp", "deeplearning.ai", "khan academy",
+		"nptel", "university", "official", "open course",
+	]
+	for kw in trusted:
+		if kw in t or kw in u:
+			score += 6
+
+	# Learning-utility signals
+	for kw in ["playlist", "course", "full course", "series", "complete", "tutorial", "beginner"]:
+		if kw in t:
+			score += 3
+
+	# Penalize clearly irrelevant/noisy results
+	for bad in ["reaction", "meme", "shorts", "clips", "trailer"]:
+		if bad in t:
+			score -= 8
+
+	return score
+
+
+def _fetch_youtube_playlist_links(topic: str, max_results: int = 8) -> list[dict]:
+	"""Extract direct YouTube playlist links by parsing playlist IDs from search results."""
+	search_url = (
+		"https://www.youtube.com/results?search_query="
+		f"{quote_plus(topic + ' full course playlist')}"
+	)
+	resp = _get(search_url)
+	if resp is None:
+		return []
+
+	playlist_ids = re.findall(r'"playlistId":"(PL[^"]+)"', resp.text)
+	if not playlist_ids:
+		return []
+
+	# Preserve order and remove duplicates
+	seen: set[str] = set()
+	unique_ids: list[str] = []
+	for pid in playlist_ids:
+		if pid not in seen:
+			seen.add(pid)
+			unique_ids.append(pid)
+		if len(unique_ids) >= max_results:
+			break
+
+	return [
+		{
+			"title": f"{topic} - YouTube Playlist {idx + 1}",
+			"url": f"https://www.youtube.com/playlist?list={pid}",
+		}
+		for idx, pid in enumerate(unique_ids)
+	]
+
+
+def _fetch_playlist_resources(topic: str) -> list[dict]:
+	"""
+	Find high-quality playlist resources for a topic.
+	Prioritises YouTube playlist URLs and ranked course-series results.
+	"""
+	queries = [
+		f"{topic} best playlist youtube",
+		f"{topic} full course playlist",
+		f"{topic} university course playlist",
+	]
+
+	pool: list[dict] = []
+	for q in queries:
+		pool.extend(_search_duckduckgo_html(q, max_results=12))
+
+	# Keep only likely playlist links
+	playlist_candidates: list[dict] = []
+	for item in pool:
+		url = item.get("url", "")
+		title = item.get("title", "")
+		u = url.lower()
+		t = title.lower()
+		is_playlist = (
+			"youtube.com/playlist" in u
+			or ("youtube.com/watch" in u and "list=" in u)
+			or ("playlist" in t and "youtube" in u)
+		)
+		if is_playlist and url:
+			playlist_candidates.append({"title": title, "url": url})
+
+	# De-duplicate by URL then rank by quality
+	by_url: dict[str, dict] = {}
+	for item in playlist_candidates:
+		by_url[item["url"]] = item
+
+	# Fallback: pull direct playlist IDs from YouTube search if sparse
+	if len(by_url) < 3:
+		for item in _fetch_youtube_playlist_links(topic, max_results=8):
+			by_url[item["url"]] = item
+
+	ranked = sorted(
+		by_url.values(),
+		key=lambda x: _playlist_quality_score(x.get("title", ""), x.get("url", "")),
+		reverse=True,
+	)
+
+	return ranked[:8]
+
+
 # ---------------------------------------------------------------------------
 # Master function: build a LearningPlan for any topic
 # ---------------------------------------------------------------------------
@@ -411,6 +566,7 @@ def get_learning_plan(topic: str) -> LearningPlan:
 		future_gfg  = pool.submit(_scrape_geeksforgeeks, topic)
 		future_gh   = pool.submit(_scrape_github_awesome, topic)
 		future_ddg  = pool.submit(_fetch_duckduckgo, topic)
+		future_play = pool.submit(_fetch_playlist_resources, topic)
 
 		# Collect results (with exception handling per source)
 		try:
@@ -432,6 +588,11 @@ def get_learning_plan(topic: str) -> LearningPlan:
 			ddg_items = future_ddg.result(timeout=30)
 		except Exception:
 			ddg_items = []
+
+		try:
+			playlist_items = future_play.result(timeout=30)
+		except Exception:
+			playlist_items = []
 
 	if wiki_summary:
 		plan.summary = wiki_summary
@@ -465,10 +626,22 @@ def get_learning_plan(topic: str) -> LearningPlan:
 
 	# Collect all resources
 	all_resources = (
-		[LearningResource(title=g["title"], url=g.get("url", ""), source="geeksforgeeks", resource_type="tutorial") for g in gfg_items]
+		[LearningResource(title=g["title"], url=g.get("url", ""), source="youtube", resource_type="playlist") for g in playlist_items]
+		+ [LearningResource(title=g["title"], url=g.get("url", ""), source="geeksforgeeks", resource_type="tutorial") for g in gfg_items]
 		+ [LearningResource(title=g["title"], url=g.get("url", ""), source="github", resource_type="curated list") for g in gh_items]
 		+ [LearningResource(title=g["title"], url=g.get("url", ""), source="duckduckgo", resource_type="article") for g in ddg_items]
 	)
+
+	# De-duplicate resources by URL/title while preserving order
+	seen_res: set[str] = set()
+	deduped_resources: list[LearningResource] = []
+	for res in all_resources:
+		key = (res.url or res.title).strip().lower()
+		if not key or key in seen_res:
+			continue
+		seen_res.add(key)
+		deduped_resources.append(res)
+	all_resources = deduped_resources
 
 	# Build LearningStep objects with levels
 	for i, name in enumerate(step_names):
@@ -480,6 +653,20 @@ def get_learning_plan(topic: str) -> LearningPlan:
 		for idx, res in enumerate(all_resources):
 			step_idx = idx % len(plan.steps)
 			plan.steps[step_idx].resources.append(res)
+
+	# Ensure each step gets access to top playlist links for learning continuity
+	top_playlists = [
+		res for res in all_resources
+		if res.resource_type == "playlist"
+	][:2]
+	if top_playlists:
+		for step in plan.steps:
+			if any(r.resource_type == "playlist" for r in step.resources):
+				continue
+			existing_urls = {r.url for r in step.resources if r.url}
+			for p in top_playlists[:1]:
+				if p.url and p.url not in existing_urls:
+					step.resources.append(p)
 
 	return plan
 
