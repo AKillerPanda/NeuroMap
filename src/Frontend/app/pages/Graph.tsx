@@ -230,7 +230,7 @@ export function Graph() {
         id: relation.id,
         source: relation.source,
         target: relation.target,
-        type: relation.type === "prerequisite" || relation.type === "hierarchical" ? "default" : "default",
+        type: relation.type === "prerequisite" || relation.type === "hierarchical" ? "default" : "smoothstep",
         animated: edgeStyle.animated,
         style: { stroke: edgeStyle.color, strokeWidth: 2 },
         markerEnd: {
@@ -346,11 +346,11 @@ export function Graph() {
             nodeColor={(node) => {
               const topic = topics.find(t => t.id === node.id);
               if (!topic) return "#e5e7eb";
-              return {
+              return ({
                 beginner: "#bbf7d0",
                 intermediate: "#fef08a",
                 advanced: "#fecaca",
-              }[topic.difficulty];
+              }[topic.difficulty]) ?? "#e5e7eb";
             }}
             maskColor="rgba(0, 0, 0, 0.1)"
           />

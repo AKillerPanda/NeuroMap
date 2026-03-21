@@ -90,7 +90,7 @@ interface LearningPath {
     reason: string;
   }>;
   startCandidates?: Array<{
-    topicId: number;
+    topicId: string;
     name: string;
     level: string;
   }>;
@@ -253,7 +253,7 @@ export function EnhancedGraph() {
   const [paths,        setPaths]        = useState<LearningPath[]>([]);
   const [stats,        setStats]        = useState<CurriculumStats | null>(null);
   const [selectedPath, setSelectedPath] = useState("path-aco");
-  const [selectedStartPoint, setSelectedStartPoint] = useState<number | null>(null);
+  const [selectedStartPoint, setSelectedStartPoint] = useState<string | null>(null);
   const [recs,         setRecs]         = useState<any[]>([]);
   const [progress,     setProgress]     = useState(0);
   const [mastered,     setMastered]     = useState<Set<string>>(new Set());
@@ -315,9 +315,7 @@ export function EnhancedGraph() {
       if (!res.ok) throw new Error(res.statusText);
       const data = await res.json();
 
-      const skillKey = (data.skillKey ?? (isParallel
-        ? requestedSkills.map((s) => encodeURIComponent(s.toLowerCase())).join("|||")
-        : decoded.toLowerCase())) as string;
+      const skillKey = (data.skillKey ?? decoded.toLowerCase()) as string;
       setActiveSkillKey(skillKey);
       setSummaryCache({});
 
@@ -425,7 +423,7 @@ export function EnhancedGraph() {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ skill: activeSkillKey, topicId }),
       });
-      if (!r.ok) { alert("Request failed"); return; }
+      if (!r.ok) { toast.error("Request failed"); return; }
       const d = await r.json();
       if (d.success) {
         setProgress(d.progress);
@@ -444,7 +442,7 @@ export function EnhancedGraph() {
           })));
         }
       } else {
-        alert(`Cannot master yet: ${d.reason}`);
+        toast.error(`Cannot master yet: ${d.reason}`);
       }
     } finally {
       setIsMastering(false);
@@ -518,7 +516,7 @@ export function EnhancedGraph() {
       setAddOpen(false);
       setNewTopic("");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed");
+      toast.error(e instanceof Error ? e.message : "Failed");
     } finally {
       setAddingTopic(false);
     }
@@ -930,7 +928,7 @@ export function EnhancedGraph() {
                             ? "bg-blue-200 border-blue-400 ring-1 ring-blue-400"
                             : "bg-white border-blue-200 hover:bg-blue-100 hover:border-blue-300"
                         }`}
-                        onClick={() => setSelectedStartPoint(candidate.topicId)}
+                        onClick={() => { setSelectedStartPoint(candidate.topicId); setSelectedId(candidate.topicId); setActiveTab("detail"); }}
                       >
                         <div className="flex items-center gap-2">
                           <div className={`size-4 rounded border-2 flex items-center justify-center ${

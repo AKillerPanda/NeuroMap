@@ -2,9 +2,7 @@ import { Plus, Trash2, Network, Route, RotateCcw, Sparkles, Zap, Brain, Loader2,
 import { Badge } from "../components/ui/badge";
 import { NeuroMapLogo } from "../components/NeuroMapLogo";
 import { toast } from "sonner";
-import { useRef } from "react";
-import { useState } from "react";
-import { useEffect } from "react";
+import { useRef, useState, useEffect, type ChangeEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { useTopics } from "../context/TopicsContext";
 import { Button } from "../components/ui/button";
@@ -268,7 +266,7 @@ export function Workspace() {
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 

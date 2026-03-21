@@ -419,7 +419,7 @@ class LearningPathACO:
         candidates = []
         for start_data in available_starts[:num_candidates]:
             candidates.append({
-                "topicId": start_data["topicId"],
+                "topicId": str(start_data["topicId"]),
                 "name": start_data["name"],
                 "level": start_data["level"],
             })

@@ -112,7 +112,7 @@ def _ensure_difficulty_gnn():
 
 # ── App setup ───────────────────────────────────────────────────────
 app = Flask(__name__)
-CORS(app)  # allow requests from the Vite dev server
+CORS(app, origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","))  # restrict to known origins
 
 # Enable response compression for all responses > 1KB
 Compress(app)
@@ -127,16 +127,16 @@ def add_security_headers(response):
     """Add security headers to all responses."""
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
-    # X-XSS-Protection is deprecated; modern browsers use CSP
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    
-    # Set Cache-Control based on request method
-    if request.method in ('GET', 'HEAD', 'OPTIONS'):
-        response.headers['Cache-Control'] = 'public, max-age=3600'
-    else:
-        # POST, PUT, DELETE, PATCH should not be cached
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    
+    # Only send HSTS over HTTPS in production; sending over HTTP is a no-op
+    # that misleads tooling and can break dev if a reverse proxy passes it through.
+    if os.getenv('FLASK_ENV') == 'production':
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+
+    # Default no-store for all responses. Live data endpoints (progress, difficulty,
+    # mastery) must never be served from cache — stale mastery state is incorrect.
+    # Static assets are served by Vite/nginx directly, so this only covers API responses.
+    response.headers['Cache-Control'] = 'no-store'
+
     return response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
@@ -953,12 +953,13 @@ def generate_graph():
         )
 
         return jsonify({
-            "skill":   skill,
-            "nodes":   nodes,
-            "edges":   edges,
-            "paths":   paths,
-            "stats":   stats,
-            "elapsed": round(elapsed, 2),
+            "skill":    skill,
+            "skillKey": skill.lower(),
+            "nodes":    nodes,
+            "edges":    edges,
+            "paths":    paths,
+            "stats":    stats,
+            "elapsed":  round(elapsed, 2),
             "timing": {
                 "scrape_s":    round(t_scrape, 3),
                 "graph_ms":    round(t_graph * 1000, 2),

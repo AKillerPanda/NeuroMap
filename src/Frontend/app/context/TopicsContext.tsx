@@ -62,25 +62,38 @@ const TopicsContext = createContext<TopicsContextType | undefined>(undefined);
 
 export function TopicsProvider({ children }: { children: ReactNode }) {
   const [topics, setTopics] = useState<Topic[]>(() => {
-    // Load from localStorage on init
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("neuromap-topics");
-      return saved ? JSON.parse(saved) : [];
+      try {
+        const saved = localStorage.getItem("neuromap-topics");
+        const parsed = saved ? JSON.parse(saved) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
     }
     return [];
   });
   const [relations, setRelations] = useState<TopicRelation[]>(() => {
-    // Load from localStorage on init
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("neuromap-relations");
-      return saved ? JSON.parse(saved) : [];
+      try {
+        const saved = localStorage.getItem("neuromap-relations");
+        const parsed = saved ? JSON.parse(saved) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
     }
     return [];
   });
   const [savedGraphs, setSavedGraphs] = useState<SavedGraph[]>(() => {
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("neuromap-saved-graphs");
-      return saved ? JSON.parse(saved) : [];
+      try {
+        const saved = localStorage.getItem("neuromap-saved-graphs");
+        const parsed = saved ? JSON.parse(saved) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
     }
     return [];
   });
@@ -182,7 +195,7 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
         const words2 = topic2.name.toLowerCase().split(/\s+/);
         const commonWords = words1.filter((w) => words2.includes(w));
 
-        if (commonWords.length > 0 || Math.random() > 0.7) {
+        if (commonWords.length > 0) {
           newRelations.push({
             id: relationId,
             source: topic1.id,
@@ -221,13 +234,32 @@ export function TopicsProvider({ children }: { children: ReactNode }) {
   const importData = (jsonData: string): boolean => {
     try {
       const data = JSON.parse(jsonData);
-      if (data.topics && Array.isArray(data.topics)) {
-        setTopics(data.topics);
-        setRelations(data.relations || []);
-        return true;
-      }
-      return false;
-    } catch (error) {
+      if (!data || !Array.isArray(data.topics)) return false;
+      const VALID_DIFFICULTIES = new Set(["beginner", "intermediate", "advanced"]);
+      const VALID_STATUSES = new Set(["not-started", "in-progress", "completed"]);
+      const validTopics = data.topics.filter(
+        (t: unknown): t is Topic =>
+          !!t &&
+          typeof t === "object" &&
+          typeof (t as Topic).id === "string" &&
+          typeof (t as Topic).name === "string" &&
+          VALID_DIFFICULTIES.has((t as Topic).difficulty) &&
+          VALID_STATUSES.has((t as Topic).status)
+      );
+      const validRelations = Array.isArray(data.relations)
+        ? data.relations.filter(
+            (r: unknown): r is TopicRelation =>
+              !!r &&
+              typeof r === "object" &&
+              typeof (r as TopicRelation).id === "string" &&
+              typeof (r as TopicRelation).source === "string" &&
+              typeof (r as TopicRelation).target === "string"
+          )
+        : [];
+      setTopics(validTopics);
+      setRelations(validRelations);
+      return validTopics.length > 0;
+    } catch {
       return false;
     }
   };
