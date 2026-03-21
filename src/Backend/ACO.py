@@ -420,6 +420,62 @@ class LearningPathACO:
 
 
 # ---------------------------------------------------------------------------
+# Parallel Learning ACO — domain-aware interleaved path optimisation
+# ---------------------------------------------------------------------------
+class ParallelLearningACO(LearningPathACO):
+    """
+    ACO for parallel learning of two topics.
+
+    Extends LearningPathACO with bridge-awareness: conceptually related
+    cross-domain topic pairs receive a pheromone boost and cost reduction,
+    nudging ants toward interleaved paths that exploit shared knowledge.
+
+    Parameters
+    ----------
+    kg              : Combined KnowledgeGraph (both topics merged, no cross-edges)
+    bridge_id_pairs : list of (topic_id_A, topic_id_B) — topics that represent
+                      the same concept in different domains.
+    **kwargs        : forwarded to LearningPathACO (m, k_max, alpha, beta, …)
+    """
+
+    __slots__ = ("_bridge_id_pairs",)
+
+    def __init__(
+        self,
+        kg: KnowledgeGraph,
+        bridge_id_pairs: list[tuple[int, int]] | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(kg, **kwargs)
+        self._bridge_id_pairs: list[tuple[int, int]] = bridge_id_pairs or []
+        if self._bridge_id_pairs:
+            self._apply_bridge_bonuses()
+
+    def _apply_bridge_bonuses(self) -> None:
+        """
+        Boost pheromone and halve the cost on bridge-pair transitions.
+
+        This biases early exploration toward paths that cross domain
+        boundaries at semantically coherent bridge points, producing
+        interleaved sequences that reinforce both curricula simultaneously.
+        """
+        id_to_idx = self._id_to_idx
+        for tid_a, tid_b in self._bridge_id_pairs:
+            if tid_a not in id_to_idx or tid_b not in id_to_idx:
+                continue
+            ia = id_to_idx[tid_a]
+            ib = id_to_idx[tid_b]
+            # Pheromone warm-start: reward transitioning at bridge points
+            self.tau[ia, ib] += 4.0
+            self.tau[ib, ia] += 4.0
+            # Cost reduction: bridge transitions are cognitively cheaper
+            self.cost[ia, ib] = max(self.cost[ia, ib] * 0.5, 0.1)
+            self.cost[ib, ia] = max(self.cost[ib, ia] * 0.5, 0.1)
+        # Rebuild heuristic to reflect updated costs
+        self.eta = 1.0 / (self.cost + 1e-10)
+
+
+# ---------------------------------------------------------------------------
 # Convenience: scrape + graph + ACO in one call
 # ---------------------------------------------------------------------------
 def find_optimal_learning_path(

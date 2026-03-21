@@ -20,12 +20,15 @@ GET  /api/health         — Health check
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import math
+import re
 import time
 import traceback
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -35,7 +38,7 @@ from flask_cors import CORS
 # ── Backend imports ─────────────────────────────────────────────────
 from Webscraping import get_learning_spec
 from graph import KnowledgeGraph, TopicLevel
-from ACO import LearningPathACO
+from ACO import LearningPathACO, ParallelLearningACO
 from SDS import spell_correct, correct_phrase, load_dictionary
 # difficulty_gnn imports torch eagerly — defer to first use
 _predict_difficulty = None
@@ -391,10 +394,11 @@ def _build_learning_paths(
 # ═══════════════════════════════════════════════════════════════════
 def _graph_stats(kg: KnowledgeGraph) -> dict[str, Any]:
     """Compute spectral / topological analytics + plain-English learning insights."""
-    stats: dict[str, Any] = {
-        "numTopics": kg.num_topics,
-        "numEdges":  int(kg.build_edge_index().size(1)),
-    }
+    stats: dict[str, Any] = {"numTopics": kg.num_topics}
+    try:
+        stats["numEdges"] = int(kg.build_edge_index().size(1))
+    except Exception:
+        stats["numEdges"] = None
     try:
         stats["algebraicConnectivity"] = round(kg.algebraic_connectivity(), 4)
     except Exception:
@@ -496,6 +500,277 @@ def _graph_stats(kg: KnowledgeGraph) -> dict[str, Any]:
 
     stats["insights"] = insights
     return stats
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Parallel learning helpers
+# ═══════════════════════════════════════════════════════════════════
+
+def _detect_bridges(spec_a: list[dict], spec_b: list[dict]) -> list[dict]:
+    """
+    Find conceptually similar topics across two domain specs using
+    normalised string similarity (SequenceMatcher, threshold ≥ 0.65).
+    """
+    def _norm(s: str) -> str:
+        return re.sub(r"\W+", " ", s.lower()).strip()
+
+    bridges: list[dict] = []
+    for sa in spec_a:
+        for sb in spec_b:
+            sim = difflib.SequenceMatcher(
+                None, _norm(sa["name"]), _norm(sb["name"])
+            ).ratio()
+            if sim >= 0.65:
+                bridges.append({
+                    "nameA":       sa["name"],
+                    "nameB":       sb["name"],
+                    "similarity":  round(sim, 3),
+                    "description": sa.get("description", "") or sb.get("description", ""),
+                })
+    return bridges
+
+
+def _build_parallel_spec(
+    skill_a: str,
+    spec_a: list[dict],
+    skill_b: str,
+    spec_b: list[dict],
+) -> tuple[list[dict], dict[str, dict]]:
+    """
+    Merge two topic specs for parallel learning.
+
+    Topic names are prefixed with their source skill label
+    (e.g. "Machine Learning › Linear Algebra") so the combined
+    KnowledgeGraph has no name collisions.
+
+    Returns
+    -------
+    merged_spec  : list of topic dicts ready for KnowledgeGraph.from_spec()
+    name_to_info : prefixed_name → {domain, skill, originalName}
+    """
+    def _pname(skill: str, name: str) -> str:
+        return f"{skill} \u203a {name}"
+
+    merged: list[dict] = []
+    name_to_info: dict[str, dict] = {}
+
+    for s in spec_a:
+        pn = _pname(skill_a, s["name"])
+        merged.append({
+            "name":               pn,
+            "description":        s.get("description", ""),
+            "level":              s.get("level", "foundational"),
+            "prerequisite_names": [_pname(skill_a, p) for p in s.get("prerequisite_names", [])],
+            "resources":          s.get("resources", []),
+        })
+        name_to_info[pn] = {"domain": "A", "skill": skill_a, "originalName": s["name"]}
+
+    for s in spec_b:
+        pn = _pname(skill_b, s["name"])
+        merged.append({
+            "name":               pn,
+            "description":        s.get("description", ""),
+            "level":              s.get("level", "foundational"),
+            "prerequisite_names": [_pname(skill_b, p) for p in s.get("prerequisite_names", [])],
+            "resources":          s.get("resources", []),
+        })
+        name_to_info[pn] = {"domain": "B", "skill": skill_b, "originalName": s["name"]}
+
+    return merged, name_to_info
+
+
+def _resolve_bridge_ids(
+    kg: KnowledgeGraph,
+    bridges: list[dict],
+    skill_a: str,
+    skill_b: str,
+) -> list[tuple[int, int]]:
+    """Map bridge name pairs to (topic_id_A, topic_id_B) tuples in the combined KG."""
+    pairs: list[tuple[int, int]] = []
+    for b in bridges:
+        pname_a = f"{skill_a} \u203a {b['nameA']}"
+        pname_b = f"{skill_b} \u203a {b['nameB']}"
+        ta = kg.get_topic_by_name(pname_a)
+        tb = kg.get_topic_by_name(pname_b)
+        if ta is not None and tb is not None:
+            pairs.append((ta.topic_id, tb.topic_id))
+    return pairs
+
+
+def _build_parallel_paths(
+    kg_combined: KnowledgeGraph,
+    bridge_id_pairs: list[tuple[int, int]],
+    skill_a: str,
+    skill_b: str,
+    tid_to_info: dict[int, dict],
+    diff_scores: dict[int, float],
+) -> list[dict[str, Any]]:
+    """
+    Build learning paths for parallel study of two topics.
+
+    Runs ParallelLearningACO on the combined graph to find an
+    interleaved ordering that respects prerequisite constraints in both
+    domains while grouping related cross-domain topics close together.
+    Also returns per-domain solo paths for reference.
+    """
+    bridge_tids: set[int] = (
+        {tid_a for tid_a, _ in bridge_id_pairs} |
+        {tid_b for _, tid_b in bridge_id_pairs}
+    )
+    K = kg_combined.num_topics
+    kw = dict(
+        m=min(max(K * 2, 10), 40),
+        k_max=min(max(K * 3, 20), 60),
+        time_limit=6,
+    )
+    aco = ParallelLearningACO(kg_combined, bridge_id_pairs=bridge_id_pairs, **kw)
+    aco_path, aco_cost = aco.optimise()
+
+    def _step(tid: int) -> dict[str, Any]:
+        t = kg_combined.topics[tid]
+        info = tid_to_info.get(tid, {})
+        level_str = t.level.name.lower() if hasattr(t.level, "name") else str(t.level)
+        prereq_names = sorted(
+            (tid_to_info.get(p, {}).get("originalName") or kg_combined.topics[p].name)
+            for p in t.prerequisites
+        )
+        synergy: str | None = None
+        if tid in bridge_tids:
+            other = skill_b if info.get("domain") == "A" else skill_a
+            synergy = (
+                f"This concept also appears in {other} — mastering it here "
+                "gives you a head start in both domains."
+            )
+        return {
+            "topicId":      str(tid),
+            "name":         info.get("originalName", t.name),
+            "displayName":  t.name,
+            "domain":       info.get("domain", "unknown"),
+            "skill":        info.get("skill", ""),
+            "level":        level_str,
+            "difficulty":   round(diff_scores.get(tid, 0.5), 3),
+            "isBridge":     tid in bridge_tids,
+            "requires":     prereq_names,
+            "synergy":      synergy,
+            "reason": (
+                "Start here — no prerequisites needed"
+                if not prereq_names
+                else f"Ready after: {', '.join(prereq_names[:2])}"
+            ),
+        }
+
+    steps = [_step(tid) for tid in aco_path]
+    domain_a = sum(1 for s in steps if s["domain"] == "A")
+    domain_b = sum(1 for s in steps if s["domain"] == "B")
+    # Count bridge PAIRS where both topics appear in the path (not individual topics)
+    path_set = set(aco_path)
+    bridges_hit = sum(
+        1 for tid_a, tid_b in bridge_id_pairs
+        if tid_a in path_set and tid_b in path_set
+    )
+
+    paths: list[dict[str, Any]] = [{
+        "id":          "path-parallel-aco",
+        "name":        "Parallel Learning Path",
+        "description": (
+            f"AI-optimised interleaved path covering both {skill_a} ({domain_a} topics) "
+            f"and {skill_b} ({domain_b} topics). "
+            f"{bridges_hit} bridge concept(s) connect the two domains."
+        ),
+        "duration":    f"{len(aco_path)} topics",
+        "difficulty":  "intermediate",
+        "type":        "parallel",
+        "skills":      [skill_a, skill_b],
+        "nodeIds":     [str(tid) for tid in aco_path],
+        "steps":       steps,
+        "convergence": aco.history,
+        "cost":        round(aco_cost, 2),
+        "bridges":     bridges_hit,
+    }]
+
+    # Per-domain solo paths for reference
+    topo = kg_combined.learning_order()
+    for skill, domain_tag in [(skill_a, "A"), (skill_b, "B")]:
+        domain_topics = [
+            t for t in topo
+            if tid_to_info.get(t.topic_id, {}).get("domain") == domain_tag
+        ]
+        paths.append({
+            "id":          f"path-{domain_tag.lower()}-solo",
+            "name":        f"{skill} Only",
+            "description": f"Study {skill} independently ({len(domain_topics)} topics).",
+            "duration":    f"{len(domain_topics)} topics",
+            "difficulty":  "intermediate",
+            "type":        "single",
+            "skills":      [skill],
+            "nodeIds":     [str(t.topic_id) for t in domain_topics],
+            "steps":       [_step(t.topic_id) for t in domain_topics],
+        })
+
+    return paths
+
+
+def _parallel_benefits(
+    bridges: list[dict],
+    kg_a: KnowledgeGraph,
+    kg_b: KnowledgeGraph,
+    skill_a: str,
+    skill_b: str,
+) -> dict[str, Any]:
+    """Analyse the synergy and time-saving benefits of parallel learning."""
+    total_a = kg_a.num_topics
+    total_b = kg_b.num_topics
+    shared = len(bridges)
+
+    synergy_score = min(shared / max(min(total_a, total_b), 1), 1.0)
+    if synergy_score >= 0.5:
+        label, desc = "High", (
+            f"{skill_a} and {skill_b} share significant common ground — "
+            "parallel learning is strongly recommended."
+        )
+    elif synergy_score >= 0.25:
+        label, desc = "Moderate", (
+            "These topics share enough concepts to benefit meaningfully from parallel study."
+        )
+    else:
+        label, desc = "Low", (
+            "These topics are largely independent — parallel study still works "
+            "but offers fewer direct synergies."
+        )
+
+    return {
+        "synergy": {
+            "score":       round(synergy_score, 3),
+            "label":       label,
+            "description": desc,
+        },
+        "sharedConcepts": {
+            "count": shared,
+            "items": [
+                {"skillA": b["nameA"], "skillB": b["nameB"], "similarity": b["similarity"]}
+                for b in bridges[:8]
+            ],
+            "insight": (
+                f"{shared} concept(s) appear in both curricula — "
+                "mastering them once benefits both topics."
+                if shared
+                else "No direct shared concepts detected — the two topics complement each other."
+            ),
+        },
+        "estimatedSaving": {
+            "totalTopicsSequential": total_a + total_b,
+            "sharedConceptReuse":    shared,
+            "description": (
+                f"Sequential learning: {total_a} + {total_b} = {total_a + total_b} topics. "
+                f"Parallel learning with {shared} shared concept(s) reduces redundant effort."
+            ),
+        },
+        "recommendedApproach": (
+            f"Study {skill_a} and {skill_b} side-by-side. "
+            "When you reach a bridge topic, deepen your understanding in both contexts simultaneously. "
+            "The parallel ACO path already sequences bridge topics at optimal interleaving points."
+        ),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -886,6 +1161,163 @@ def get_learning_paths(skill: str):
     
     return jsonify({"paths": paths, "totalTopics": kg.num_topics})
 
+
+
+@app.route("/api/generate-parallel", methods=["POST"])
+def generate_parallel():
+    """
+    Build parallel learning paths for two topics.
+
+    Request JSON:
+        { "skills": ["Machine Learning", "Statistics"] }
+
+    Response JSON:
+        {
+          "skills": [...],
+          "nodes": [...],          // combined graph nodes (domain-annotated)
+          "edges": [...],
+          "paths": [...],          // parallel ACO path + per-domain solo paths
+          "bridges": [...],        // shared concepts across topics
+          "benefits": {...},       // synergy analysis
+          "stats": {...},          // per-topic + combined spectral stats
+          "difficultyScores": {...} // GAT difficulty meter per topic
+        }
+    """
+    body = request.get_json(silent=True) or {}
+    raw_skills = body.get("skills") or []
+    skills = [s.strip() for s in raw_skills if isinstance(s, str) and s.strip()]
+    if len(skills) < 2:
+        return jsonify({"error": "provide at least 2 skills in the 'skills' array"}), 400
+
+    skill_a, skill_b = skills[0], skills[1]
+    if skill_a.lower() == skill_b.lower():
+        return jsonify({"error": "the two skills must be different"}), 400
+    log.info("generate-parallel  skill_a=%r  skill_b=%r", skill_a, skill_b)
+    t0 = time.time()
+
+    try:
+        # 1. Scrape both topics concurrently
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fa = ex.submit(get_learning_spec, skill_a)
+            fb = ex.submit(get_learning_spec, skill_b)
+            spec_a = fa.result()
+            spec_b = fb.result()
+        t_scrape = time.time() - t0
+
+        if not spec_a:
+            return jsonify({"error": f"no subtopics found for '{skill_a}'"}), 404
+        if not spec_b:
+            return jsonify({"error": f"no subtopics found for '{skill_b}'"}), 404
+
+        # 2. Individual KGs (for per-topic stats + benefits)
+        kg_a = KnowledgeGraph.from_spec(spec_a)
+        kg_b = KnowledgeGraph.from_spec(spec_b)
+
+        # 3. Detect bridge concepts (similar topics across domains)
+        bridges = _detect_bridges(spec_a, spec_b)
+
+        # 4. Build combined spec with domain-prefixed names
+        merged_spec, name_to_info = _build_parallel_spec(skill_a, spec_a, skill_b, spec_b)
+
+        # 5. Build combined KG
+        t1 = time.time()
+        kg_combined = KnowledgeGraph.from_spec(merged_spec)
+        # Map topic_id → domain info
+        tid_to_info: dict[int, dict] = {}
+        for s in merged_spec:
+            t = kg_combined.get_topic_by_name(s["name"])
+            if t is not None:
+                tid_to_info[t.topic_id] = name_to_info.get(s["name"], {})
+        t_graph = time.time() - t1
+
+        # Store graphs for mastery / shortest-path endpoints
+        _store_graph(skill_a.lower(), (kg_a, spec_a))
+        _store_graph(skill_b.lower(), (kg_b, spec_b))
+        combined_key = f"{skill_a.lower()}+{skill_b.lower()}"
+        _store_graph(combined_key, (kg_combined, merged_spec))
+
+        # 6. Resolve bridge topic IDs in the combined KG
+        bridge_id_pairs = _resolve_bridge_ids(kg_combined, bridges, skill_a, skill_b)
+        bridge_tids = (
+            {tid_a for tid_a, _ in bridge_id_pairs} |
+            {tid_b for _, tid_b in bridge_id_pairs}
+        )
+
+        # 7. Layout — reuse existing helper, then annotate with domain info
+        t2 = time.time()
+        nodes = _layout_nodes(kg_combined, merged_spec)
+        for node in nodes:
+            tid = int(node["id"])
+            info = tid_to_info.get(tid, {})
+            node["data"]["sourceDomain"]  = info.get("domain", "unknown")
+            node["data"]["sourceSkill"]   = info.get("skill", "")
+            node["data"]["originalName"]  = info.get("originalName", node["data"]["label"])
+            node["data"]["isBridge"]      = tid in bridge_tids
+        edges = _build_edges(kg_combined)
+        t_layout = time.time() - t2
+
+        # 8. Difficulty prediction on combined graph (GAT meter)
+        t3 = time.time()
+        _ensure_difficulty_gnn()
+        diff_scores = _predict_difficulty(kg_combined, skill_key=combined_key)
+        for node in nodes:
+            tid = int(node["id"])
+            node["data"]["difficultyScore"] = round(diff_scores.get(tid, 0.5), 3)
+        t_diff = time.time() - t3
+
+        # 9. Parallel ACO paths
+        t4 = time.time()
+        paths = _build_parallel_paths(
+            kg_combined, bridge_id_pairs, skill_a, skill_b, tid_to_info, diff_scores
+        )
+        t_paths = time.time() - t4
+
+        # 10. Benefits + stats
+        benefits       = _parallel_benefits(bridges, kg_a, kg_b, skill_a, skill_b)
+        stats_a        = _graph_stats(kg_a)
+        stats_b        = _graph_stats(kg_b)
+        stats_combined = _graph_stats(kg_combined)
+
+        elapsed = time.time() - t0
+        log.info(
+            "generate-parallel  (%r + %r)  topics=%d+%d  bridges=%d  elapsed=%.2fs",
+            skill_a, skill_b, kg_a.num_topics, kg_b.num_topics, len(bridges), elapsed,
+        )
+
+        return jsonify({
+            "skills":   [skill_a, skill_b],
+            "nodes":    nodes,
+            "edges":    edges,
+            "paths":    paths,
+            "bridges":  bridges,
+            "benefits": benefits,
+            "stats": {
+                skill_a:    stats_a,
+                skill_b:    stats_b,
+                "combined": stats_combined,
+            },
+            "difficultyScores": {
+                str(tid): {
+                    "score":    round(score, 4),
+                    "domain":   tid_to_info.get(tid, {}).get("domain", "unknown"),
+                    "skill":    tid_to_info.get(tid, {}).get("skill", ""),
+                    "isBridge": tid in bridge_tids,
+                }
+                for tid, score in diff_scores.items()
+            },
+            "elapsed": round(elapsed, 2),
+            "timing": {
+                "scrape_s":  round(t_scrape, 3),
+                "graph_ms":  round(t_graph * 1000, 2),
+                "layout_ms": round(t_layout * 1000, 2),
+                "diff_ms":   round(t_diff * 1000, 2),
+                "paths_ms":  round(t_paths * 1000, 2),
+            },
+        })
+
+    except Exception as exc:
+        log.error("generate-parallel failed: %s\n%s", exc, traceback.format_exc())
+        return jsonify({"error": str(exc)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════

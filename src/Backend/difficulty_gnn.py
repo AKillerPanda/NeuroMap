@@ -36,6 +36,7 @@ This means the model works out-of-the-box on any knowledge graph.
 """
 from __future__ import annotations
 
+import threading
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -296,6 +297,7 @@ def calibrate_model(
 # Module-level singleton (lightweight, no trained weights to persist)
 _model: DifficultyGAT | None = None
 _calibrated_for: str | None = None  # skill key last calibrated for
+_model_lock = threading.Lock()       # guards _model and _calibrated_for
 
 
 def predict_difficulty(
@@ -312,21 +314,22 @@ def predict_difficulty(
     """
     global _model, _calibrated_for
 
-    if _model is None:
-        _model = DifficultyGAT()
+    with _model_lock:
+        if _model is None:
+            _model = DifficultyGAT()
 
-    # Recalibrate if this is a new skill graph
-    if _calibrated_for != skill_key or skill_key == "":
-        calibrate_model(_model, kg, epochs=30)
-        _calibrated_for = skill_key
+        # Recalibrate if this is a new skill graph
+        if _calibrated_for != skill_key or skill_key == "":
+            calibrate_model(_model, kg, epochs=30)
+            _calibrated_for = skill_key
 
-    _model.eval()
-    with torch.no_grad():
-        feats = build_difficulty_features(kg, mastered_ids or set())
-        ei = _make_bidirectional(kg.build_edge_index())
-        if feats.shape[0] == 0:
-            return {}
-        scores = _model(feats, ei)
+        _model.eval()
+        with torch.no_grad():
+            feats = build_difficulty_features(kg, mastered_ids or set())
+            ei = _make_bidirectional(kg.build_edge_index())
+            if feats.shape[0] == 0:
+                return {}
+            scores = _model(feats, ei)
 
     return {tid: round(float(scores[tid]), 4) for tid in kg.topics}
 
