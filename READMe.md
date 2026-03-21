@@ -20,7 +20,7 @@ NeuroMap currently supports two major learning workflows:
 - Show node-level difficulty, recommendations, and summaries
 - Add generated graphs into the persistent overall NeuroMap
 
-1. Overall NeuroMap mode:
+2\. Overall NeuroMap mode:
 
 - Maintain your accumulated topics and relationships
 - View an optimized ACO path in the graph view
@@ -137,7 +137,7 @@ curl -X POST http://localhost:5000/api/generate \
 
 - Backend API guide: src/Backend/API_INTEGRATION.md
 - Full integration guide: src/INTEGRATION_GUIDE.md
-- Detailed project summary: detailed summary.d
+- Detailed project summary: detailed summary.md
 
 ## Contributing
 

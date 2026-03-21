@@ -23,10 +23,19 @@ import { toast } from "sonner";
 const nodeWidth = 200;
 const nodeHeight = 120;
 
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url, window.location.origin);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export function Graph() {
   const { topics, relations, updateTopic } = useTopics();
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
   const [showOnlyAiImported, setShowOnlyAiImported] = useState(false);
   const [loadingResources, setLoadingResources] = useState(false);
@@ -461,21 +470,38 @@ export function Graph() {
               {selectedTopic.resources && selectedTopic.resources.length > 0 ? (
                 <div className="space-y-1.5">
                   <p className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">Learning resources</p>
-                  {selectedTopic.resources.map((r, idx) => (
-                    <a
-                      key={`${selectedTopic.id}-resource-${idx}`}
-                      href={r.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 p-2 rounded-md border hover:bg-violet-50 hover:border-violet-200"
-                    >
-                      <ExternalLink className="size-3 text-violet-500 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium text-gray-800 truncate">{r.title}</div>
-                        <div className="text-[10px] text-gray-400 truncate">{r.source || r.type || "resource"}</div>
-                      </div>
-                    </a>
-                  ))}
+                  {selectedTopic.resources.map((r, idx) => {
+                    const sanitizedUrl = isSafeUrl(r.url) ? r.url : null;
+                    if (!sanitizedUrl) {
+                      return (
+                        <div
+                          key={`${selectedTopic.id}-resource-${idx}`}
+                          className="flex items-center gap-2 p-2 rounded-md border bg-gray-50"
+                        >
+                          <ExternalLink className="size-3 text-gray-300 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium text-gray-700 truncate">{r.title}</div>
+                            <div className="text-[10px] text-gray-400 truncate">Blocked unsafe link</div>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <a
+                        key={`${selectedTopic.id}-resource-${idx}`}
+                        href={sanitizedUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 p-2 rounded-md border hover:bg-violet-50 hover:border-violet-200"
+                      >
+                        <ExternalLink className="size-3 text-violet-500 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="text-xs font-medium text-gray-800 truncate">{r.title}</div>
+                          <div className="text-[10px] text-gray-400 truncate">{r.source || r.type || "resource"}</div>
+                        </div>
+                      </a>
+                    );
+                  })}
                 </div>
               ) : loadingResources ? (
                 <p className="text-xs text-gray-400">Finding learning links…</p>

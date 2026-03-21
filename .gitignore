@@ -10,6 +10,7 @@ pnpm-debug.log*
 .env
 .env.*
 !.env.example
+!.env.*.example
 
 # Build outputs
 coverage/
@@ -28,8 +29,50 @@ src/Frontend/*.sock
 .venv/
 venv/
 env/
+ENV/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Python cache
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+dist/
+build/
+
+# TypeScript incremental artifacts
+*.tsbuildinfo
+src/**/*.tsbuildinfo
+
+# IDE and Editor artifacts
+.vscode/extensions/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
+.vs/
+.sublime-project
+.sublime-workspace
+*.iml
+
+# OS artifacts
+Thumbs.db
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+
+# Testing
+.coverage
+.pytest_cache/
+coverage.xml
+
+# Production artifacts (don't commit generated files)
+src/Backend/*.pid
+*.sock
+.gunicorn.pid
+

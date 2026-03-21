@@ -23,6 +23,7 @@ from __future__ import annotations
 import difflib
 import logging
 import math
+import os
 import re
 import time
 import traceback
@@ -32,10 +33,16 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 from typing import Any
+from urllib.parse import quote
 
 import numpy as np
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_compress import Compress
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # ── Backend imports ─────────────────────────────────────────────────
 from Webscraping import get_learning_spec
@@ -106,6 +113,24 @@ def _ensure_difficulty_gnn():
 # ── App setup ───────────────────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)  # allow requests from the Vite dev server
+
+# Enable response compression for all responses > 1KB
+Compress(app)
+
+# Configure for production
+app.config['JSON_SORT_KEYS'] = False
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = os.getenv('FLASK_ENV', 'production') != 'production'
+
+# Add security headers middleware
+@app.after_request
+def add_security_headers(response):
+    """Add security headers to all responses."""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 log = logging.getLogger(__name__)
@@ -1296,6 +1321,7 @@ def get_aco_path_for_topics():
         "beginner": "foundational",
         "intermediate": "intermediate",
         "advanced": "advanced",
+        "expert": "advanced",
     }
 
     prereq_ids_by_target: dict[str, set[str]] = {tid: set() for tid in id_to_topic}
@@ -1413,6 +1439,7 @@ def get_overall_difficulty_for_topics():
         "beginner": "foundational",
         "intermediate": "intermediate",
         "advanced": "advanced",
+        "expert": "advanced",
     }
 
     # Use id-scoped internal names so duplicate labels do not collide.
@@ -1720,7 +1747,9 @@ def generate_parallel():
         # Store graphs for mastery / shortest-path endpoints
         for skill_name in skills:
             _store_graph(skill_name.lower(), (per_skill_kg[skill_name], specs[skill_name]))
-        combined_key = "+".join(s.lower() for s in skills)
+        # URL-encode each skill then join with a delimiter that cannot appear
+        # in encoded segments to avoid key collisions (e.g., skills containing '+').
+        combined_key = "|||".join(quote(s.lower(), safe="") for s in skills)
         _store_graph(combined_key, (kg_combined, merged_spec))
 
         # 6. Resolve bridge topic IDs in the combined KG

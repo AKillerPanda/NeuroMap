@@ -305,7 +305,7 @@ export function EnhancedGraph() {
       const data = await res.json();
 
       const skillKey = (data.skillKey ?? (isParallel
-        ? requestedSkills.map((s) => s.toLowerCase()).join("+")
+        ? requestedSkills.map((s) => encodeURIComponent(s.toLowerCase())).join("|||")
         : decoded.toLowerCase())) as string;
       setActiveSkillKey(skillKey);
       setSummaryCache({});
@@ -509,12 +509,18 @@ export function EnhancedGraph() {
       toast.error("No graph data to add yet");
       return;
     }
-    const result = addAiGraphToNeuroMap({
-      nodes: rawNodes,
-      edges: edges.map((e) => ({ source: e.source, target: e.target })),
-    });
-    setAddedToNeuroMap(true);
-    toast.success(`Added ${result.addedTopics} topic(s) and ${result.addedRelations} relation(s) to NeuroMap`);
+    try {
+      const result = addAiGraphToNeuroMap({
+        nodes: rawNodes,
+        edges: edges.map((e) => ({ source: e.source, target: e.target })),
+      });
+      setAddedToNeuroMap(true);
+      toast.success(`Added ${result.addedTopics} topic(s) and ${result.addedRelations} relation(s) to NeuroMap`);
+    } catch (error) {
+      setAddedToNeuroMap(false);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Could not add graph to NeuroMap: ${message}`);
+    }
   }, [rawNodes, edges, addAiGraphToNeuroMap]);
 
   // ── Loading / error ─────────────────────────────────────────────────────────

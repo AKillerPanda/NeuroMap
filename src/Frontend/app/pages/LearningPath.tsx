@@ -89,15 +89,19 @@ export function LearningPath() {
           return;
         }
 
-        const topicMap = new Map(topics.map((t) => [t.name, t]));
+        const topicMapById = new Map(topics.map((t) => [t.id, t]));
+        const topicMapByName = new Map(topics.map((t) => [t.name, t]));
         const path: PathStep[] = steps
           .map((s: any) => {
-            const topic = topicMap.get(String(s.name));
+            const stepTopicId = s.topicId ?? s.id;
+            const topic = stepTopicId
+              ? topicMapById.get(String(stepTopicId))
+              : topicMapByName.get(String(s.name));
             if (!topic) return null;
             const prereqNames = Array.isArray(s.requires) ? s.requires.map(String) : [];
             const prerequisites = prereqNames
-              .map((n) => topicMap.get(n))
-              .filter((t): t is Topic => !!t);
+              .map((n: string) => topicMapByName.get(n))
+              .filter((t: Topic | undefined): t is Topic => !!t);
             return {
               topic,
               order: Number(s.order) || 0,
@@ -105,8 +109,8 @@ export function LearningPath() {
               reason: String(s.reason ?? ""),
             };
           })
-          .filter((p): p is PathStep => !!p)
-          .sort((a, b) => a.order - b.order);
+          .filter((p: PathStep | null): p is PathStep => !!p)
+          .sort((a: PathStep, b: PathStep) => a.order - b.order);
 
         if (path.length === 0) {
           buildHeuristicPath();
