@@ -338,15 +338,18 @@ def predict_difficulty(
         if _model is None:
             _model = DifficultyGAT()
 
-    # Calibrate under dedicated lock so inference is not starved
+    # Calibrate if needed. _calibration_lock prevents duplicate concurrent
+    # calibrations for the same skill; _model_lock serializes calibration
+    # with inference to prevent a weight-read/weight-write data race.
     if _calibrated_for != skill_key or skill_key == "":
         with _calibration_lock:
             # Double-checked: another thread may have calibrated while we waited
             if _calibrated_for != skill_key or skill_key == "":
-                calibrate_model(_model, kg, epochs=30)
-                _calibrated_for = skill_key
+                with _model_lock:
+                    calibrate_model(_model, kg, epochs=30)
+                    _calibrated_for = skill_key
 
-    # Fast inference under model lock
+    # Inference under model lock (fast — single forward pass)
     with _model_lock:
         _model.eval()
         with torch.no_grad():

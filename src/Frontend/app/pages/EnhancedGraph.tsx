@@ -403,13 +403,16 @@ export function EnhancedGraph() {
     setSelectedId(node.id);
     setActiveTab("detail");
     const skillForSummary = (node.data as TopicNodeData).subSkillKey ?? activeSkillKey;
-    if (!summaryCache[node.id] && skillForSummary) {
+    // Key includes the skill so main-graph and sub-graph nodes with the same
+    // numeric ID don't overwrite each other's cached summaries.
+    const cacheKey = `${skillForSummary}:${node.id}`;
+    if (!summaryCache[cacheKey] && skillForSummary) {
       setSummaryLoading(true);
       try {
         const r = await fetch(`/api/summary/${encodeURIComponent(skillForSummary)}/${node.id}`);
         if (r.ok) {
           const d: TopicSummary = await r.json();
-          setSummaryCache(p => ({ ...p, [node.id]: d }));
+          setSummaryCache(p => ({ ...p, [cacheKey]: d }));
         }
       } finally {
         setSummaryLoading(false);
@@ -439,14 +442,24 @@ export function EnhancedGraph() {
         setNodes(nds => nds.map(n =>
           n.id === topicId ? { ...n, data: { ...n.data, mastered: true } } : n
         ));
-        const dr = await fetch(`/api/difficulty/${encodeURIComponent(activeSkillKey)}`);
-        if (dr.ok) {
-          const diffData = await dr.json();
-          setRecs(diffData.recommendations ?? []);
-          const diffScores: Record<string, number> = diffData.difficulties ?? {};
+        // Refresh difficulty scores for the mastered topic's graph (may be a sub-graph)
+        // and also the main graph if they differ, so all visible nodes stay current.
+        const skillsToRefresh = skillForMastery === activeSkillKey
+          ? [activeSkillKey]
+          : [activeSkillKey, skillForMastery];
+        const mergedDiffScores: Record<string, number> = {};
+        for (const sk of skillsToRefresh) {
+          const dr = await fetch(`/api/difficulty/${encodeURIComponent(sk)}`);
+          if (dr.ok) {
+            const diffData = await dr.json();
+            if (sk === activeSkillKey) setRecs(diffData.recommendations ?? []);
+            Object.assign(mergedDiffScores, diffData.difficulties ?? {});
+          }
+        }
+        if (Object.keys(mergedDiffScores).length > 0) {
           setNodes(nds => nds.map(n => ({
             ...n,
-            data: { ...n.data, difficultyScore: diffScores[n.id] ?? (n.data.difficultyScore as number) },
+            data: { ...n.data, difficultyScore: mergedDiffScores[n.id] ?? (n.data.difficultyScore as number) },
           })));
         }
       } else {
@@ -535,7 +548,9 @@ export function EnhancedGraph() {
 
   // ── Derived ─────────────────────────────────────────────────────────────────
 
-  const selectedSummary = selectedId ? summaryCache[selectedId] : null;
+  const selectedNode    = selectedId ? nodes.find(n => n.id === selectedId) : null;
+  const selectedSkillKey = (selectedNode?.data as TopicNodeData | undefined)?.subSkillKey ?? activeSkillKey;
+  const selectedSummary = selectedId ? summaryCache[`${selectedSkillKey}:${selectedId}`] ?? null : null;
   const selectedRaw     = rawNodes.find(n => n.id === selectedId)?.data ?? null;
   const currentPath     = paths.find(p => p.id === selectedPath);
   
