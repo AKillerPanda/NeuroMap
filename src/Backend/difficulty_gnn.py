@@ -369,6 +369,23 @@ def predict_difficulty(
     return result
 
 
+def invalidate_scores_cache(skill_key: str) -> None:
+    """
+    Drop all cached scores for *skill_key*.
+
+    Call this whenever a graph is re-generated for the same skill so that
+    subsequent difficulty requests use the new graph topology rather than
+    returning stale scores from the previous graph.
+    Also forces recalibration on the next predict_difficulty call.
+    """
+    global _calibrated_for
+    keys_to_drop = [k for k in _scores_cache if k[0] == skill_key]
+    for k in keys_to_drop:
+        _scores_cache.pop(k, None)
+    if _calibrated_for == skill_key:
+        _calibrated_for = None
+
+
 def get_difficulty_explanation(
     kg: KnowledgeGraph,
     topic_id: int,

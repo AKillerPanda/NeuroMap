@@ -54,14 +54,17 @@ _predict_difficulty = None
 _get_difficulty_explanation = None
 _get_smart_recommendation = None
 
+_invalidate_scores_cache = None  # loaded lazily alongside the other gnn symbols
+
 def _ensure_difficulty_gnn():
-    global _predict_difficulty, _get_difficulty_explanation, _get_smart_recommendation
+    global _predict_difficulty, _get_difficulty_explanation, _get_smart_recommendation, _invalidate_scores_cache
     if _predict_difficulty is None:
         try:
-            from difficulty_gnn import predict_difficulty, get_difficulty_explanation, get_smart_recommendation
+            from difficulty_gnn import predict_difficulty, get_difficulty_explanation, get_smart_recommendation, invalidate_scores_cache
             _predict_difficulty = predict_difficulty
             _get_difficulty_explanation = get_difficulty_explanation
             _get_smart_recommendation = get_smart_recommendation
+            _invalidate_scores_cache = invalidate_scores_cache
         except Exception as exc:
             log.warning("difficulty_gnn unavailable; using heuristic fallback: %s", exc)
 
@@ -174,6 +177,10 @@ def _store_graph(key: str, value: tuple[KnowledgeGraph, list[dict]]) -> None:
             # Clean up the associated lock to prevent unbounded growth
             with _kg_locks_lock:
                 _kg_locks.pop(evicted_key, None)
+    # Flush stale GNN scores for this key so a re-generated graph always
+    # gets fresh scores rather than serving cached results from the old topology.
+    if _invalidate_scores_cache is not None:
+        _invalidate_scores_cache(key)
 
 def _get_graph(key: str) -> tuple[KnowledgeGraph, list[dict]] | None:
     """Thread-safe LRU lookup."""

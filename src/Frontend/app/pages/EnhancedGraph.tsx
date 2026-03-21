@@ -557,7 +557,6 @@ export function EnhancedGraph() {
 
   // ── Derived ─────────────────────────────────────────────────────────────────
 
-  const selectedNode    = selectedId ? nodes.find(n => n.id === selectedId) : null;
   const selectedSummary = selectedId ? summaryCache[selectedId] ?? null : null;
   const selectedRaw     = rawNodes.find(n => n.id === selectedId)?.data ?? null;
   const currentPath     = paths.find(p => p.id === selectedPath);
