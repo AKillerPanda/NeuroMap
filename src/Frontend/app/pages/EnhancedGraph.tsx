@@ -403,13 +403,14 @@ export function EnhancedGraph() {
     setSelectedId(node.id);
     setActiveTab("detail");
     const skillForSummary = (node.data as TopicNodeData).subSkillKey ?? activeSkillKey;
-    // Key includes the skill so main-graph and sub-graph nodes with the same
-    // numeric ID don't overwrite each other's cached summaries.
-    const cacheKey = `${skillForSummary}:${node.id}`;
+    // node.id is globally unique after prefixing sub-graph IDs — use it directly as cache key
+    const cacheKey = node.id;
+    // Strip the subSkillKey prefix to get the real KG topic ID for the API URL
+    const realNodeId = node.id.includes("::") ? node.id.split("::").slice(1).join("::") : node.id;
     if (!summaryCache[cacheKey] && skillForSummary) {
       setSummaryLoading(true);
       try {
-        const r = await fetch(`/api/summary/${encodeURIComponent(skillForSummary)}/${node.id}`);
+        const r = await fetch(`/api/summary/${encodeURIComponent(skillForSummary)}/${realNodeId}`);
         if (r.ok) {
           const d: TopicSummary = await r.json();
           setSummaryCache(p => ({ ...p, [cacheKey]: d }));
@@ -427,12 +428,14 @@ export function EnhancedGraph() {
     if (isMastering) return;
 
     const skillForMastery = skillKeyOverride ?? activeSkillKey;
+    // Sub-graph node IDs are prefixed "subSkillKey::realId" — extract the real KG ID for the API
+    const realTopicId = topicId.includes("::") ? topicId.split("::").slice(1).join("::") : topicId;
     setIsMastering(true);
     try {
       const r = await fetch("/api/master", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ skill: skillForMastery, topicId }),
+        body:    JSON.stringify({ skill: skillForMastery, topicId: realTopicId }),
       });
       if (!r.ok) { toast.error("Request failed"); return; }
       const d = await r.json();
@@ -488,13 +491,18 @@ export function EnhancedGraph() {
       const maxX  = rawNodes.reduce((m, n) => Math.max(m, n.position?.x ?? 0), 0);
       const shift = maxX + 450;
       const subSkillKey = newTopic.trim().toLowerCase();
+      // Prefix every node/edge ID with "subSkillKey::" so they never collide
+      // with main-graph IDs (both KGs use sequential integers starting at 0).
+      const idPrefix = `${subSkillKey}::`;
       const newRaw: any[] = d.nodes.map((n: any) => ({
         ...n,
+        id: `${idPrefix}${n.id}`,
         position: { x: (n.position?.x ?? 0) + shift, y: n.position?.y ?? 0 },
-        data: { ...n.data, subSkillKey },
+        // realId = the original KG integer ID used in API calls
+        data: { ...n.data, subSkillKey, realId: String(n.id) },
       }));
 
-      // Fetch difficulty scores for the newly added sub-graph
+      // Fetch difficulty scores — look up by original (non-prefixed) node ID
       let newDiffScores: Record<string, number> = {};
       const ndr = await fetch(`/api/difficulty/${encodeURIComponent(newTopic.trim())}`);
       if (ndr.ok) {
@@ -503,34 +511,35 @@ export function EnhancedGraph() {
       }
       const newRawWithDiff = newRaw.map((n: any) => ({
         ...n,
-        data: { ...n.data, difficultyScore: newDiffScores[n.id] ?? 0.5 },
+        data: { ...n.data, difficultyScore: newDiffScores[n.data.realId] ?? 0.5 },
       }));
 
       // Avoid duplicate raw nodes by filtering out IDs that already exist
       const existingRawIds = new Set(rawNodes.map((n: any) => n.id));
       const newRawFiltered = newRawWithDiff.filter((n: any) => !existingRawIds.has(n.id));
-      
+
       setRawNodes(prev => [...prev, ...newRawFiltered]);
-      
+
       // Compute current path IDs based on selectedPath
       const currentPathIds = new Set<string>(paths.find(p => p.id === selectedPath)?.nodeIds ?? []);
-      
+
       // Avoid duplicate flow nodes
       const newFlowNodes = toFlowNodes(newRawFiltered, mastered, currentPathIds);
       const existingNodeIds = new Set(nodes.map((n) => n.id));
       const newNodesFiltered = newFlowNodes.filter((n) => !existingNodeIds.has(n.id));
       setNodes(prev => [...prev, ...newNodesFiltered]);
-      
-      // Avoid duplicate edges
+
+      // Prefix edge IDs and their source/target to match the prefixed node IDs
       const existingEdgeIds = new Set(edges.map((e) => e.id));
-      const newEdgesFiltered = (d.edges as any[]).filter((e: any) => !existingEdgeIds.has(e.id));
-      setEdges(prev => [
-        ...prev,
-        ...newEdgesFiltered.map((e: any) => ({
-          id: e.id, source: e.source, target: e.target,
-          animated: e.animated, markerEnd: e.markerEnd,
-        })),
-      ]);
+      const newEdgesMapped = (d.edges as any[]).map((e: any) => ({
+        id:        `${idPrefix}${e.id ?? `${e.source}-${e.target}`}`,
+        source:    `${idPrefix}${e.source}`,
+        target:    `${idPrefix}${e.target}`,
+        animated:  e.animated,
+        markerEnd: e.markerEnd,
+      }));
+      const newEdgesFiltered = newEdgesMapped.filter((e: any) => !existingEdgeIds.has(e.id));
+      setEdges(prev => [...prev, ...newEdgesFiltered]);
       
       // Avoid duplicate paths
       const existingPathIds = new Set(paths.map((p) => p.id));
@@ -549,8 +558,7 @@ export function EnhancedGraph() {
   // ── Derived ─────────────────────────────────────────────────────────────────
 
   const selectedNode    = selectedId ? nodes.find(n => n.id === selectedId) : null;
-  const selectedSkillKey = (selectedNode?.data as TopicNodeData | undefined)?.subSkillKey ?? activeSkillKey;
-  const selectedSummary = selectedId ? summaryCache[`${selectedSkillKey}:${selectedId}`] ?? null : null;
+  const selectedSummary = selectedId ? summaryCache[selectedId] ?? null : null;
   const selectedRaw     = rawNodes.find(n => n.id === selectedId)?.data ?? null;
   const currentPath     = paths.find(p => p.id === selectedPath);
   
