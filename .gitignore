@@ -5,6 +5,20 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.log
+.npm/
+.pnpm-store/
+.yarn/
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# Node.js / frontend tool caches
+.cache/
+.parcel-cache/
+.turbo/
+.vite/
+.eslintcache
 
 # Environment files
 .env
@@ -73,4 +87,9 @@ coverage.xml
 src/Backend/*.pid
 *.sock
 .gunicorn.pid
+
+# Server runtime artifacts
+logs/
+*.out
+instance/
 
