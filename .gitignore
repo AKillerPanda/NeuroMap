@@ -34,10 +34,10 @@ build/
 out/
 
 # Frontend: ignore accidental Node server artifacts
-src/Frontend/server/
-src/Frontend/api/
 src/Frontend/*.pid
 src/Frontend/*.sock
+src/Frontend/**/*.pid
+src/Frontend/**/*.sock
 
 # Python virtual environments
 .venv/
@@ -51,12 +51,10 @@ pip-delete-this-directory.txt
 # Python cache
 __pycache__/
 *.py[cod]
-*.pyo
 *.egg-info/
 
 # TypeScript incremental artifacts
 *.tsbuildinfo
-src/**/*.tsbuildinfo
 
 # IDE and Editor artifacts
 .vscode/extensions/
@@ -90,6 +88,6 @@ src/Backend/*.pid
 
 # Server runtime artifacts
 logs/
-*.out
+nohup.out
 instance/
 
